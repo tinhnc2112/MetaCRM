@@ -1,4 +1,4 @@
-import type { ConnectionStatus } from "./status";
+import type { ConnectionSnapshot } from "./status";
 
 export type MessageSource = "content" | "popup" | "sidepanel" | "background";
 
@@ -9,7 +9,17 @@ export type PingMessage = {
 
 export type GetConnectionStatusMessage = {
   type: "GET_CONNECTION_STATUS";
-  source: MessageSource;
+  source: "popup" | "sidepanel";
+};
+
+export type ConnectBackendMessage = {
+  type: "CONNECT_BACKEND";
+  source: "popup" | "sidepanel";
+};
+
+export type DisconnectBackendMessage = {
+  type: "DISCONNECT_BACKEND";
+  source: "popup" | "sidepanel";
 };
 
 export type ContentScriptReadyMessage = {
@@ -18,16 +28,12 @@ export type ContentScriptReadyMessage = {
   location: string;
 };
 
-export type SubscribeConnectionStatusMessage = {
-  type: "SUBSCRIBE_CONNECTION_STATUS";
-  source: "popup" | "sidepanel";
-};
-
 export type ExtensionMessage =
   | PingMessage
   | GetConnectionStatusMessage
-  | ContentScriptReadyMessage
-  | SubscribeConnectionStatusMessage;
+  | ConnectBackendMessage
+  | DisconnectBackendMessage
+  | ContentScriptReadyMessage;
 
 export type PongResponse = {
   ok: true;
@@ -37,7 +43,8 @@ export type PongResponse = {
 export type ConnectionStatusResponse = {
   ok: true;
   type: "CONNECTION_STATUS";
-  status: ConnectionStatus;
+  source: "background";
+  connection: ConnectionSnapshot;
 };
 
 export type ErrorResponse = {

@@ -9,12 +9,21 @@
     <main class="sidepanel-shell">
       <header>
         <h1>MetaCRM</h1>
-        <p>Facebook Workspace</p>
+        <p>Backend connectivity dashboard</p>
       </header>
       <section class="status-card" aria-live="polite">
-        <span>Status:</span>
-        <strong id="status-text">Disconnected</strong>
+        <div class="status-row">
+          <span>Backend</span>
+          <span id="backend-dot" class="status-dot disconnected" aria-hidden="true"></span>
+          <strong id="backend-text">Disconnected</strong>
+        </div>
+        <div class="status-row">
+          <span>WebSocket</span>
+          <span id="websocket-dot" class="status-dot disconnected" aria-hidden="true"></span>
+          <strong id="websocket-text">Disconnected</strong>
+        </div>
       </section>
+      <button id="reconnect-button" type="button">Reconnect</button>
     </main>
     <script type="module" src="./index.ts"></script>
   </body>

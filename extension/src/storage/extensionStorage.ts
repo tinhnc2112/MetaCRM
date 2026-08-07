@@ -1,12 +1,18 @@
-import type { ConnectionStatus } from "../types/status";
+import type { ConnectionSnapshot } from "../types/status";
 
-const CONNECTION_STATUS_KEY = "connectionStatus";
+const CONNECTION_SNAPSHOT_KEY = "connectionSnapshot";
 
-export async function getStoredConnectionStatus(): Promise<ConnectionStatus> {
-  const values = await chrome.storage.local.get(CONNECTION_STATUS_KEY);
-  return values[CONNECTION_STATUS_KEY] === "CONNECTED" ? "CONNECTED" : "DISCONNECTED";
+const defaultSnapshot: ConnectionSnapshot = {
+  backend: "DISCONNECTED",
+  websocket: "DISCONNECTED",
+  connection: "DISCONNECTED"
+};
+
+export async function getStoredConnectionSnapshot(): Promise<ConnectionSnapshot> {
+  const values = await chrome.storage.local.get(CONNECTION_SNAPSHOT_KEY);
+  return (values[CONNECTION_SNAPSHOT_KEY] as ConnectionSnapshot | undefined) ?? defaultSnapshot;
 }
 
-export async function setStoredConnectionStatus(status: ConnectionStatus): Promise<void> {
-  await chrome.storage.local.set({ [CONNECTION_STATUS_KEY]: status });
+export async function setStoredConnectionSnapshot(snapshot: ConnectionSnapshot): Promise<void> {
+  await chrome.storage.local.set({ [CONNECTION_SNAPSHOT_KEY]: snapshot });
 }

@@ -11,6 +11,7 @@ router = APIRouter(tags=["system"])
 
 class HealthResponse(BaseModel):
     status: str
+    service: str
 
 
 class VersionResponse(BaseModel):
@@ -22,7 +23,7 @@ class VersionResponse(BaseModel):
 @router.get("/health", response_model=HealthResponse, status_code=status.HTTP_200_OK)
 def health() -> HealthResponse:
     """Return process liveness without requiring downstream dependencies."""
-    return HealthResponse(status="ok")
+    return HealthResponse(status="ok", service="metacrm-api")
 
 
 @router.get("/health/database", response_model=HealthResponse, status_code=status.HTTP_200_OK)
@@ -32,7 +33,7 @@ def database_health() -> HealthResponse:
         check_database_connection()
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database unavailable") from exc
-    return HealthResponse(status="ok")
+    return HealthResponse(status="ok", service="metacrm-api")
 
 
 @router.get("/version", response_model=VersionResponse, status_code=status.HTTP_200_OK)

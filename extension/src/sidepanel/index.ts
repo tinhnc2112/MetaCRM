@@ -1,15 +1,21 @@
+import { getConnectionClass, getConnectionLabel, isConnectionSnapshot } from "../utils/connectionUi";
 import { sendRuntimeMessage } from "../utils/messages";
 import "../sidepanel/styles.css";
 
-const statusText = document.querySelector<HTMLElement>("#status-text");
+const backendDot = document.querySelector<HTMLSpanElement>("#backend-dot");
+const backendText = document.querySelector<HTMLSpanElement>("#backend-text");
+const websocketDot = document.querySelector<HTMLSpanElement>("#websocket-dot");
+const websocketText = document.querySelector<HTMLSpanElement>("#websocket-text");
+const reconnectButton = document.querySelector<HTMLButtonElement>("#reconnect-button");
 
-function renderStatus(status: "CONNECTED" | "DISCONNECTED"): void {
-  if (!statusText) {
-    return;
-  }
+function renderConnection(snapshot: { backend: "CONNECTED" | "DISCONNECTED"; websocket: "CONNECTED" | "CONNECTING" | "DISCONNECTED" | "ERROR" }): void {
+  backendText?.replaceChildren(getConnectionLabel(snapshot.backend));
+  backendDot?.classList.remove("connected", "connecting", "disconnected", "error");
+  backendDot?.classList.add(getConnectionClass(snapshot.backend));
 
-  statusText.textContent = status === "CONNECTED" ? "Connected" : "Disconnected";
-  statusText.dataset.status = status;
+  websocketText?.replaceChildren(getConnectionLabel(snapshot.websocket));
+  websocketDot?.classList.remove("connected", "connecting", "disconnected", "error");
+  websocketDot?.classList.add(getConnectionClass(snapshot.websocket));
 }
 
 async function loadStatus(): Promise<void> {
@@ -19,11 +25,45 @@ async function loadStatus(): Promise<void> {
   });
 
   if (response.ok && response.type === "CONNECTION_STATUS") {
-    renderStatus(response.status);
-  } else {
-    renderStatus("DISCONNECTED");
+    renderConnection(response.connection);
+    return;
+  }
+
+  renderConnection({
+    backend: "DISCONNECTED",
+    websocket: "DISCONNECTED"
+  });
+}
+
+async function reconnect(): Promise<void> {
+  const response = await sendRuntimeMessage({
+    type: "CONNECT_BACKEND",
+    source: "sidepanel"
+  });
+
+  if (response.ok && response.type === "CONNECTION_STATUS") {
+    renderConnection(response.connection);
   }
 }
 
-void sendRuntimeMessage({ type: "PING", source: "sidepanel" });
+chrome.runtime.onMessage.addListener((message: unknown) => {
+  if (!message || typeof message !== "object") {
+    return;
+  }
+
+  const candidate = message as {
+    ok?: boolean;
+    type?: string;
+    connection?: unknown;
+  };
+
+  if (candidate.ok === true && candidate.type === "CONNECTION_STATUS" && isConnectionSnapshot(candidate.connection)) {
+    renderConnection(candidate.connection);
+  }
+});
+
+reconnectButton?.addEventListener("click", () => {
+  void reconnect();
+});
+
 void loadStatus();

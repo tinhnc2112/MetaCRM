@@ -37,6 +37,10 @@ class Settings(BaseModel):
     database_pool_recycle: int = Field(default=1800, validation_alias="DATABASE_POOL_RECYCLE")
     database_charset: str = Field(default="utf8mb4", validation_alias="DATABASE_CHARSET")
     cors_origins: list[str] = Field(default_factory=list, validation_alias="CORS_ORIGINS")
+    cors_origin_regex: str = Field(
+        default=r"^chrome-extension://[a-p]{32}$",
+        validation_alias="CORS_ORIGIN_REGEX",
+    )
     cors_allow_credentials: bool = Field(default=True, validation_alias="CORS_ALLOW_CREDENTIALS")
     upload_dir: Path = Field(default=PROJECT_ROOT / "backend" / "uploads", validation_alias="UPLOAD_DIR")
     log_dir: Path = Field(default=PROJECT_ROOT / "backend" / "logs", validation_alias="LOG_DIR")

@@ -3,8 +3,9 @@ import type { ExtensionMessage, ExtensionResponse } from "../types/messages";
 const messageTypes = new Set([
   "PING",
   "GET_CONNECTION_STATUS",
+  "CONNECT_BACKEND",
+  "DISCONNECT_BACKEND",
   "CONTENT_SCRIPT_READY",
-  "SUBSCRIBE_CONNECTION_STATUS"
 ]);
 
 const sources = new Set(["content", "popup", "sidepanel", "background"]);

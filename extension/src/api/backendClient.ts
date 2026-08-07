@@ -1,18 +1,31 @@
 import { extensionConfig } from "../utils/config";
 
-export async function checkBackendConnection(): Promise<boolean> {
+export type BackendHealthResponse = {
+  status: "ok";
+  service: "metacrm-api";
+};
+
+export async function checkBackendHealth(): Promise<BackendHealthResponse> {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 4000);
+  const timeoutId = setTimeout(() => controller.abort(), 4000);
 
   try {
-    const response = await fetch(`${extensionConfig.backendUrl}/health`, {
+    const response = await fetch(`${extensionConfig.backendUrl}/api/v1/system/health`, {
       method: "GET",
       signal: controller.signal
     });
-    return response.ok;
-  } catch {
-    return false;
+
+    if (!response.ok) {
+      throw new Error(`Backend health check failed with status ${response.status}`);
+    }
+
+    const payload = (await response.json()) as BackendHealthResponse;
+    if (payload.status !== "ok" || payload.service !== "metacrm-api") {
+      throw new Error("Unexpected backend health payload");
+    }
+
+    return payload;
   } finally {
-    window.clearTimeout(timeoutId);
+    clearTimeout(timeoutId);
   }
 }

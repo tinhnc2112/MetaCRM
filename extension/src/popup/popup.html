@@ -8,11 +8,19 @@
   <body>
     <main class="popup-shell">
       <h1>MetaCRM</h1>
-      <section class="status-row" aria-live="polite">
-        <span>Backend:</span>
-        <span id="status-dot" class="status-dot disconnected" aria-hidden="true"></span>
-        <span id="status-text">Disconnected</span>
+      <section class="status-group" aria-live="polite">
+        <div class="status-row">
+          <span>Backend</span>
+          <span id="backend-dot" class="status-dot disconnected" aria-hidden="true"></span>
+          <span id="backend-text">Disconnected</span>
+        </div>
+        <div class="status-row">
+          <span>WebSocket</span>
+          <span id="websocket-dot" class="status-dot disconnected" aria-hidden="true"></span>
+          <span id="websocket-text">Disconnected</span>
+        </div>
       </section>
+      <button id="reconnect-button" type="button">Reconnect</button>
     </main>
     <script type="module" src="./index.ts"></script>
   </body>
