@@ -1,0 +1,3 @@
+Alembic migration scripts live in versions/. Generate migrations with:
+
+    alembic -c backend/alembic.ini revision --autogenerate -m "description"
