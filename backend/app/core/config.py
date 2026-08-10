@@ -50,6 +50,7 @@ class Settings(BaseModel):
     )
     facebook_api_version: str = Field(default="v25.0", validation_alias="FACEBOOK_API_VERSION")
     facebook_token_encryption_key: str = Field(default="", validation_alias="FACEBOOK_TOKEN_ENCRYPTION_KEY")
+    facebook_webhook_verify_token: str = Field(default="", validation_alias="FACEBOOK_WEBHOOK_VERIFY_TOKEN")
     facebook_desktop_redirect_uri: str = Field(
         default="metacrm://settings/facebook",
         validation_alias="FACEBOOK_DESKTOP_REDIRECT_URI",

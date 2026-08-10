@@ -4,14 +4,17 @@ from app.db.base import Base
 from app.models.base import AuditMixin, BaseModel, SoftDeleteMixin, UTCDateTimeMixin, UUIDMixin
 from app.models.auth import Role, User, user_roles
 from app.models.facebook import FacebookAccount, FacebookOAuthState, FacebookPage, UserPageContext
+from app.models.messenger import Conversation, Message
 
 __all__ = [
     "AuditMixin",
     "Base",
     "BaseModel",
+    "Conversation",
     "FacebookAccount",
     "FacebookOAuthState",
     "FacebookPage",
+    "Message",
     "Role",
     "SoftDeleteMixin",
     "UTCDateTimeMixin",
