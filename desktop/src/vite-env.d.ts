@@ -5,6 +5,7 @@ declare global {
     metacrm?: {
       platform: string;
       getAppVersion: () => Promise<string>;
+      onDeepLink?: (callback: (target: string) => void) => void;
     };
   }
 }

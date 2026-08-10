@@ -90,3 +90,37 @@ body {
   margin-top: 8px;
   color: #4b5563;
 }
+
+.settings-page {
+  max-width: 860px;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.settings-header h2 {
+  margin: 0;
+}
+
+.settings-section {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 20px 24px;
+  margin-bottom: 16px;
+}
+
+.settings-section h4 {
+  margin-top: 0;
+}
+
+.facebook-page-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+}
