@@ -42,6 +42,18 @@ class Settings(BaseModel):
         validation_alias="CORS_ORIGIN_REGEX",
     )
     cors_allow_credentials: bool = Field(default=True, validation_alias="CORS_ALLOW_CREDENTIALS")
+    facebook_app_id: str = Field(default="", validation_alias="FACEBOOK_APP_ID")
+    facebook_app_secret: str = Field(default="", validation_alias="FACEBOOK_APP_SECRET")
+    facebook_redirect_uri: str = Field(
+        default="http://127.0.0.1:8000/api/v1/facebook/auth/callback",
+        validation_alias="FACEBOOK_REDIRECT_URI",
+    )
+    facebook_api_version: str = Field(default="v25.0", validation_alias="FACEBOOK_API_VERSION")
+    facebook_token_encryption_key: str = Field(default="", validation_alias="FACEBOOK_TOKEN_ENCRYPTION_KEY")
+    facebook_desktop_redirect_uri: str = Field(
+        default="metacrm://settings/facebook",
+        validation_alias="FACEBOOK_DESKTOP_REDIRECT_URI",
+    )
     upload_dir: Path = Field(default=PROJECT_ROOT / "backend" / "uploads", validation_alias="UPLOAD_DIR")
     log_dir: Path = Field(default=PROJECT_ROOT / "backend" / "logs", validation_alias="LOG_DIR")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
