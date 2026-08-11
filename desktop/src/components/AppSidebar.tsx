@@ -1,4 +1,4 @@
-import { DashboardOutlined, FacebookOutlined, SettingOutlined } from "@ant-design/icons";
+import { DashboardOutlined, FacebookOutlined, MessageOutlined, SettingOutlined } from "@ant-design/icons";
 import { Layout, Menu } from "antd";
 import { useLocation, useNavigate } from "react-router-dom";
 
@@ -18,6 +18,11 @@ export function AppSidebar() {
             key: "/dashboard",
             icon: <DashboardOutlined />,
             label: "Dashboard"
+          },
+          {
+            key: "/messenger",
+            icon: <MessageOutlined />,
+            label: "Messenger / Inbox"
           },
           {
             key: "settings",

@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Generic, TypeVar
 from uuid import UUID
 
 from app.models.auth import User
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation, Message
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 T = TypeVar("T")
-
-
-# ---------------------------------------------------------------------------
-# Shared dataclass for paginated results
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -35,18 +32,7 @@ class PaginatedResult(Generic[T]):
         return self.page > 1
 
 
-# ---------------------------------------------------------------------------
-# Authorization helper
-# ---------------------------------------------------------------------------
-
-
 def get_user_page_ids(session: Session, user: User) -> list[int]:
-    """Return the list of FacebookPage PKs the user has access to.
-
-    A user owns a page when their ``FacebookAccount`` (via user_id) has that
-    page linked via ``facebook_account_id``.  Deleted accounts / pages are
-    excluded.
-    """
     rows = (
         session.query(FacebookPage.id)
         .join(FacebookAccount, FacebookAccount.id == FacebookPage.facebook_account_id)
@@ -61,9 +47,34 @@ def get_user_page_ids(session: Session, user: User) -> list[int]:
     return [row[0] for row in rows]
 
 
-# ---------------------------------------------------------------------------
-# Conversation queries
-# ---------------------------------------------------------------------------
+def _latest_message(session: Session, conversation_id: int) -> Message | None:
+    return (
+        session.query(Message)
+        .filter(Message.conversation_id == conversation_id)
+        .order_by(Message.fb_timestamp_ms.desc().nulls_last(), Message.id.desc())
+        .first()
+    )
+
+
+def unread_count_for_conversation(session: Session, conversation: Conversation) -> int:
+    query = session.query(func.count(Message.id)).filter(
+        Message.conversation_id == conversation.id,
+        Message.is_from_page.is_(False),
+    )
+    if conversation.last_read_at is not None:
+        query = query.filter(Message.sent_at.is_not(None), Message.sent_at > conversation.last_read_at)
+    return int(query.scalar() or 0)
+
+
+def conversation_last_message_preview(session: Session, conversation: Conversation) -> str | None:
+    message = _latest_message(session, conversation.id)
+    if message is None:
+        return None
+    if message.text:
+        return message.text
+    if message.postback_payload:
+        return message.postback_payload
+    return message.event_type
 
 
 def list_conversations(
@@ -74,18 +85,6 @@ def list_conversations(
     page: int = 1,
     page_size: int = 20,
 ) -> PaginatedResult[Conversation]:
-    """Return a paginated, newest-first list of conversations the user can see.
-
-    Access control: only conversations whose ``facebook_page_id`` belongs to a
-    page the user owns are returned.
-
-    Args:
-        session: DB session.
-        user: Authenticated user.
-        page_id_filter: Optional Facebook page_id string to narrow results.
-        page: 1-based page number.
-        page_size: Number of items per page (max 100).
-    """
     page_size = min(page_size, 100)
     page = max(page, 1)
 
@@ -93,22 +92,16 @@ def list_conversations(
     if not allowed_page_ids:
         return PaginatedResult(items=[], total=0, page=page, page_size=page_size)
 
-    query = (
-        session.query(Conversation)
-        .filter(
-            Conversation.facebook_page_id.in_(allowed_page_ids),
-            Conversation.deleted_at.is_(None),
-        )
+    query = session.query(Conversation).filter(
+        Conversation.facebook_page_id.in_(allowed_page_ids),
+        Conversation.deleted_at.is_(None),
     )
-
     if page_id_filter is not None:
         query = query.filter(Conversation.page_id == page_id_filter)
 
     total = query.count()
-
     items = (
-        query
-        .order_by(
+        query.order_by(
             Conversation.last_message_at.desc().nulls_last(),
             Conversation.created_at.desc(),
         )
@@ -116,29 +109,17 @@ def list_conversations(
         .limit(page_size)
         .all()
     )
-
     return PaginatedResult(items=items, total=total, page=page, page_size=page_size)
 
 
-def get_conversation_for_user(
-    session: Session,
-    user: User,
-    conversation_uuid: str,
-) -> Conversation | None:
-    """Return the conversation if the user has access, else None.
-
-    Uses UUID (not integer PK) as the public identifier to avoid enumeration.
-    """
+def get_conversation_for_user(session: Session, user: User, conversation_uuid: str) -> Conversation | None:
     allowed_page_ids = get_user_page_ids(session, user)
     if not allowed_page_ids:
         return None
-
-    # Convert string UUID to UUID object for proper comparison in SQLAlchemy
     try:
         uuid_obj = UUID(conversation_uuid)
     except ValueError:
         return None
-
     return (
         session.query(Conversation)
         .filter(
@@ -150,11 +131,6 @@ def get_conversation_for_user(
     )
 
 
-# ---------------------------------------------------------------------------
-# Message queries
-# ---------------------------------------------------------------------------
-
-
 def list_messages(
     session: Session,
     conversation: Conversation,
@@ -163,26 +139,10 @@ def list_messages(
     page_size: int = 50,
     oldest_first: bool = False,
 ) -> PaginatedResult[Message]:
-    """Return paginated messages for a conversation.
-
-    Default ordering is newest-first (most recent messages at the top of the
-    response), which is typical for chat UIs that load earlier history.
-    Set ``oldest_first=True`` to get chronological order.
-
-    Args:
-        session: DB session.
-        conversation: Already-authorised Conversation instance.
-        page: 1-based page number.
-        page_size: Items per page (max 100).
-        oldest_first: If True, order ascending by sent_at / fb_timestamp_ms.
-    """
     page_size = min(page_size, 100)
     page = max(page, 1)
 
-    query = session.query(Message).filter(
-        Message.conversation_id == conversation.id
-    )
-
+    query = session.query(Message).filter(Message.conversation_id == conversation.id)
     total = query.count()
 
     if oldest_first:
@@ -193,11 +153,21 @@ def list_messages(
         order_secondary = Message.id.desc()
 
     items = (
-        query
-        .order_by(order_primary, order_secondary)
+        query.order_by(order_primary, order_secondary)
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
-
     return PaginatedResult(items=items, total=total, page=page, page_size=page_size)
+
+
+def mark_conversation_read(session: Session, conversation: Conversation) -> tuple[Conversation, bool, int]:
+    latest = conversation.last_message_at or datetime.now(UTC)
+    already_read = conversation.last_read_at is not None and conversation.last_read_at >= latest
+    if not already_read:
+        conversation.last_read_at = latest
+        session.add(conversation)
+        session.commit()
+        session.refresh(conversation)
+    unread_count = unread_count_for_conversation(session, conversation)
+    return conversation, already_read, unread_count

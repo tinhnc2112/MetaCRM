@@ -37,18 +37,14 @@ class Conversation(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     uuid: Mapped[UUID] = mapped_column(unique=True, nullable=False, default=uuid4, index=True)
-    # FK to facebook_pages (the Page that owns this conversation)
     facebook_page_id: Mapped[int] = mapped_column(
         ForeignKey("facebook_pages.id", ondelete="CASCADE"), nullable=False
     )
-    # page_id string — denormalised for fast lookup without joining facebook_pages
     page_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    # PSID — Page-scoped user ID of the end-user
     psid: Mapped[str] = mapped_column(String(64), nullable=False)
-    # Optional display name retrieved from Graph API (nullable — not always available)
     customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    # Timestamp of the most recent message — used for conversation ordering
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
@@ -75,19 +71,12 @@ class Message(Base):
     conversation_id: Mapped[int] = mapped_column(
         ForeignKey("facebook_conversations.id", ondelete="CASCADE"), nullable=False
     )
-    # Facebook message ID — globally unique; used for idempotency
     mid: Mapped[str] = mapped_column(String(255), nullable=False)
-    # "message" | "postback" | "read"
     event_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    # Direction: True = sent from Page to customer, False = received from customer
     is_from_page: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    # Raw text content (nullable — attachments / postbacks may have no text)
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Postback payload string (nullable)
     postback_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Facebook epoch timestamp in milliseconds from the webhook payload
     fb_timestamp_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    # Derived UTC datetime for easier querying
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
