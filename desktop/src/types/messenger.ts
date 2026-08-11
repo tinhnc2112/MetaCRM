@@ -50,3 +50,7 @@ export type MarkConversationReadResponse = {
   unread_count: number;
   already_read: boolean;
 };
+
+export type SendMessageRequest = {
+  text: string;
+};

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, Avatar, Badge, Empty, List, Spin, Typography } from "antd";
+import { Alert, Avatar, Badge, Button, Empty, Input, List, Spin, Typography } from "antd";
 
 import { getCurrentFacebookPage } from "../services/facebookService";
-import { listConversations, listMessages, markConversationRead } from "../services/messengerService";
+import { listConversations, listMessages, markConversationRead, sendMessage } from "../services/messengerService";
 import type { Conversation, Message } from "../types/messenger";
 
 type InboxEvent = {
@@ -16,6 +16,8 @@ type InboxEvent = {
 export function MessengerInboxPage() {
   const queryClient = useQueryClient();
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [draftText, setDraftText] = useState("");
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const currentPageQuery = useQuery({
     queryKey: ["facebook-current-page"],
@@ -46,6 +48,31 @@ export function MessengerInboxPage() {
     onSuccess: async (_, conversationId) => {
       await queryClient.invalidateQueries({ queryKey: ["messenger-conversations", currentPageId] });
       await queryClient.invalidateQueries({ queryKey: ["messenger-messages", conversationId] });
+    }
+  });
+
+  const sendMessageMutation = useMutation({
+    mutationFn: ({ conversationId, text }: { conversationId: string; text: string }) =>
+      sendMessage(conversationId, text),
+    onSuccess: async (message) => {
+      setDraftText("");
+      setSendError(null);
+      if (selectedConversationId) {
+        await queryClient.invalidateQueries({ queryKey: ["messenger-messages", selectedConversationId] });
+      }
+      await queryClient.invalidateQueries({ queryKey: ["messenger-conversations", currentPageId] });
+      queryClient.setQueryData(["messenger-messages", selectedConversationId], (previous: any) => {
+        if (!previous?.items) {
+          return previous;
+        }
+        const nextItems = previous.items.some((item: Message) => item.id === message.id)
+          ? previous.items
+          : [message, ...previous.items];
+        return { ...previous, items: nextItems };
+      });
+    },
+    onError: () => {
+      setSendError("Could not send the message.");
     }
   });
 
@@ -92,6 +119,14 @@ export function MessengerInboxPage() {
 
   const conversations = conversationsQuery.data?.items ?? [];
   const messages = messagesQuery.data?.items ?? [];
+  const trimmedDraft = draftText.trim();
+
+  const handleSend = () => {
+    if (!selectedConversationId || !trimmedDraft || sendMessageMutation.isPending) {
+      return;
+    }
+    void sendMessageMutation.mutateAsync({ conversationId: selectedConversationId, text: trimmedDraft });
+  };
 
   return (
     <div className="messenger-inbox-page">
@@ -146,12 +181,32 @@ export function MessengerInboxPage() {
             ) : messagesQuery.isError ? (
               <Alert type="error" showIcon message="Could not load messages." />
             ) : messages.length === 0 ? (
-              <Empty description="No messages in this conversation" />
+              <div className="messenger-thread-shell">
+                <Empty description="No messages in this conversation" />
+                <MessageComposer
+                  value={draftText}
+                  error={sendError}
+                  loading={sendMessageMutation.isPending}
+                  disabled={!trimmedDraft}
+                  onChange={setDraftText}
+                  onSend={handleSend}
+                />
+              </div>
             ) : (
-              <div className="messenger-thread">
-                {messages.map((message) => (
-                  <MessageBubble key={message.id} message={message} />
-                ))}
+              <div className="messenger-thread-shell">
+                <div className="messenger-thread">
+                  {messages.map((message) => (
+                    <MessageBubble key={message.id} message={message} />
+                  ))}
+                </div>
+                <MessageComposer
+                  value={draftText}
+                  error={sendError}
+                  loading={sendMessageMutation.isPending}
+                  disabled={!trimmedDraft}
+                  onChange={setDraftText}
+                  onSend={handleSend}
+                />
               </div>
             )}
           </section>
@@ -197,6 +252,46 @@ function MessageBubble({ message }: { message: Message }) {
       <div className="messenger-message-body">{message.text ?? message.postback_payload ?? message.event_type}</div>
       <div className="messenger-message-time">{formatTimestamp(message.sent_at ?? message.created_at)}</div>
     </article>
+  );
+}
+
+function MessageComposer({
+  value,
+  error,
+  loading,
+  disabled,
+  onChange,
+  onSend
+}: {
+  value: string;
+  error: string | null;
+  loading: boolean;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onSend: () => void;
+}) {
+  return (
+    <div className="messenger-composer">
+      {error ? <Alert type="error" showIcon message={error} /> : null}
+      <Input.TextArea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Write a reply..."
+        autoSize={{ minRows: 3, maxRows: 6 }}
+        onPressEnter={(event) => {
+          if (!event.shiftKey) {
+            event.preventDefault();
+            onSend();
+          }
+        }}
+      />
+      <div className="messenger-composer-actions">
+        <Typography.Text type="secondary">Enter to send, Shift+Enter for a new line</Typography.Text>
+        <Button type="primary" onClick={onSend} loading={loading} disabled={disabled}>
+          Send
+        </Button>
+      </div>
+    </div>
   );
 }
 

@@ -189,6 +189,13 @@ body {
   gap: 12px;
 }
 
+.messenger-thread-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+}
+
 .messenger-message {
   max-width: 72%;
   padding: 12px 14px;
@@ -215,6 +222,19 @@ body {
   margin-top: 6px;
   font-size: 12px;
   color: #6b7280;
+}
+
+.messenger-composer {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 12px;
+}
+
+.messenger-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
 }
 
 @media (max-width: 1200px) {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from app.schemas.messenger import (
     MessageListResponse,
     MessageResponse,
     PaginationMeta,
+    SendMessageRequest,
 )
 from app.services.facebook.conversations import (
     conversation_last_message_preview,
@@ -23,9 +25,11 @@ from app.services.facebook.conversations import (
     list_conversations,
     list_messages,
     mark_conversation_read,
+    send_message_to_conversation,
     unread_count_for_conversation,
 )
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from app.services.facebook.exceptions import FacebookApiError, FacebookIntegrationError, FacebookPermissionError
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/facebook/conversations", tags=["conversations"])
@@ -138,3 +142,60 @@ def mark_conversation_read_endpoint(
         unread_count=unread_count,
         already_read=already_read,
     )
+
+
+@router.post("/{conversation_id}/messages", response_model=MessageResponse)
+async def send_message_endpoint(
+    conversation_id: str,
+    payload: SendMessageRequest,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
+) -> MessageResponse:
+    try:
+        UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    conversation = get_conversation_for_user(session, current_user, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="text must not be empty")
+    if len(text) > 1000:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="text is too long")
+
+    try:
+        message, was_created = send_message_to_conversation(session, conversation, text=text)
+    except FacebookPermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except FacebookApiError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except FacebookIntegrationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    manager = request.app.state.manager
+    if was_created:
+        try:
+            await manager.broadcast(
+                json.dumps(
+                    {
+                        "type": "new_message",
+                        "conversation_id": str(conversation.uuid),
+                        "page_id": conversation.page_id,
+                        "psid": conversation.psid,
+                        "message_id": str(message.uuid),
+                        "event_type": message.event_type,
+                        "is_from_page": message.is_from_page,
+                        "text": message.text,
+                        "sent_at": message.sent_at.isoformat() if message.sent_at else None,
+                    }
+                ),
+                channel=f"page:{conversation.page_id}",
+            )
+        except Exception:
+            # Broadcast is best-effort; the send already succeeded and was persisted.
+            pass
+    return _serialize_message(message, conversation)

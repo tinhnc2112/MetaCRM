@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import json
 from typing import Generic, TypeVar
 from uuid import UUID
 
 from app.models.auth import User
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation, Message
+from app.services.facebook.client import FacebookGraphClient
+from app.services.facebook.crypto import TokenCipher
+from app.services.facebook.exceptions import FacebookApiError, FacebookIntegrationError, FacebookPermissionError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -171,3 +175,73 @@ def mark_conversation_read(session: Session, conversation: Conversation) -> tupl
         session.refresh(conversation)
     unread_count = unread_count_for_conversation(session, conversation)
     return conversation, already_read, unread_count
+
+
+def _get_page_for_conversation(session: Session, conversation: Conversation) -> FacebookPage | None:
+    return (
+        session.query(FacebookPage)
+        .join(FacebookAccount, FacebookAccount.id == FacebookPage.facebook_account_id)
+        .filter(
+            FacebookPage.id == conversation.facebook_page_id,
+            FacebookPage.deleted_at.is_(None),
+            FacebookAccount.deleted_at.is_(None),
+            FacebookAccount.is_active.is_(True),
+        )
+        .first()
+    )
+
+
+def send_message_to_conversation(
+    session: Session,
+    conversation: Conversation,
+    *,
+    text: str,
+) -> tuple[Message, bool]:
+    page = _get_page_for_conversation(session, conversation)
+    if page is None:
+        raise FacebookIntegrationError("Facebook Page not found")
+
+    try:
+        access_token = TokenCipher().decrypt(page.access_token_encrypted or "")
+    except FacebookIntegrationError:
+        raise
+
+    client = FacebookGraphClient()
+    try:
+        response = client.post(
+            "me/messages",
+            {
+                "recipient": json.dumps({"id": conversation.psid}),
+                "message": json.dumps({"text": text}),
+                "access_token": access_token,
+            },
+        )
+    except (FacebookApiError, FacebookPermissionError) as exc:
+        raise exc
+
+    message_id = str(response.get("message_id") or response.get("mid") or "")
+    if not message_id:
+        raise FacebookApiError("Facebook API did not return a message_id")
+
+    existing = session.query(Message).filter(Message.mid == message_id).first()
+    if existing is not None:
+        return existing, False
+
+    now = datetime.now(UTC)
+    message = Message(
+        conversation_id=conversation.id,
+        mid=message_id,
+        event_type="message",
+        is_from_page=True,
+        text=text,
+        postback_payload=None,
+        fb_timestamp_ms=int(now.timestamp() * 1000),
+        sent_at=now,
+    )
+    conversation.last_message_at = now
+    session.add(message)
+    session.add(conversation)
+    session.commit()
+    session.refresh(conversation)
+    session.refresh(message)
+    return message, True

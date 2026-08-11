@@ -2,7 +2,9 @@ import { apiClient } from "./apiClient";
 import type {
   ConversationListResponse,
   MarkConversationReadResponse,
-  MessageListResponse
+  MessageListResponse,
+  Message,
+  SendMessageRequest
 } from "../types/messenger";
 
 export async function listConversations(pageId?: string): Promise<ConversationListResponse> {
@@ -34,6 +36,18 @@ export async function listMessages(
 export async function markConversationRead(conversationId: string): Promise<MarkConversationReadResponse> {
   const response = await apiClient.post<MarkConversationReadResponse>(
     `/api/v1/facebook/conversations/${encodeURIComponent(conversationId)}/read`
+  );
+  return response.data;
+}
+
+export async function sendMessage(
+  conversationId: string,
+  text: string
+): Promise<Message> {
+  const payload: SendMessageRequest = { text };
+  const response = await apiClient.post<Message>(
+    `/api/v1/facebook/conversations/${encodeURIComponent(conversationId)}/messages`,
+    payload
   );
   return response.data;
 }

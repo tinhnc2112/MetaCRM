@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class WebhookAcceptedResponse(BaseModel):
@@ -67,3 +67,7 @@ class MarkConversationReadResponse(BaseModel):
     last_read_at: datetime | None
     unread_count: int
     already_read: bool
+
+
+class SendMessageRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
