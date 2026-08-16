@@ -134,7 +134,7 @@ body {
 
 .messenger-inbox-grid {
   display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
+  grid-template-columns: 360px minmax(0, 1fr) 380px;
   gap: 16px;
   min-height: 680px;
 }
@@ -153,6 +153,129 @@ body {
 
 .messenger-thread-panel {
   padding: 20px;
+}
+
+.messenger-profile-panel {
+  min-height: 680px;
+  padding: 20px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.messenger-profile-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.messenger-profile-identity {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.messenger-profile-header h4 {
+  margin: 0;
+}
+
+.messenger-profile-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.messenger-profile-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+}
+
+.messenger-profile-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.messenger-profile-section-header h5 {
+  margin: 0;
+}
+
+.messenger-note-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.messenger-note-editor-actions {
+  justify-content: flex-end;
+}
+
+.messenger-note-item {
+  padding-inline: 0 !important;
+}
+
+.messenger-note-card {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.messenger-note-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.messenger-note-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.messenger-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.messenger-timeline-item {
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.messenger-timeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.messenger-timeline-body {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .messenger-loading {

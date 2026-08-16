@@ -11,6 +11,7 @@ export type Conversation = {
   page_id: string;
   psid: string;
   customer_name: string | null;
+  customer_avatar_url: string | null;
   last_message_at: string | null;
   last_message_preview: string | null;
   unread_count: number;

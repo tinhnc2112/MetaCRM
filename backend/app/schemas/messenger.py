@@ -27,6 +27,7 @@ class ConversationResponse(BaseModel):
     page_id: str
     psid: str
     customer_name: str | None
+    customer_avatar_url: str | None = None
     last_message_at: datetime | None
     last_message_preview: str | None = None
     unread_count: int = 0

@@ -10,9 +10,10 @@ from typing import Any
 
 from app.models.facebook import FacebookPage
 from app.models.messenger import Conversation, Message
-from sqlalchemy.orm import Session
-
+from app.services.facebook.client import FacebookGraphClient
+from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.exceptions import FacebookIntegrationError
+from sqlalchemy.orm import Session
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +176,50 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC)
 
 
+def _fetch_customer_profile(facebook_page: FacebookPage, psid: str) -> tuple[str | None, str | None]:
+    encrypted_token = facebook_page.access_token_encrypted
+    if not encrypted_token and facebook_page.facebook_account is not None:
+        encrypted_token = facebook_page.facebook_account.access_token_encrypted
+
+    access_token = TokenCipher().decrypt(encrypted_token or "")
+    client = FacebookGraphClient()
+    response = client.get(
+        f"{psid}",
+        params={"fields": "name,picture.type(large)"},
+        access_token=access_token,
+    )
+
+    customer_name = response.get("name")
+    picture = response.get("picture", {})
+    picture_data = picture.get("data", {}) if isinstance(picture, dict) else {}
+    customer_avatar_url = picture_data.get("url") if isinstance(picture_data, dict) else None
+    return (
+        str(customer_name) if customer_name else None,
+        str(customer_avatar_url) if customer_avatar_url else None,
+    )
+
+
+def hydrate_conversation_identity(session: Session, conversation: Conversation, facebook_page: FacebookPage) -> None:
+    if conversation.customer_name and conversation.customer_avatar_url:
+        return
+
+    try:
+        customer_name, customer_avatar_url = _fetch_customer_profile(facebook_page, conversation.psid)
+    except FacebookIntegrationError:
+        return
+
+    updated = False
+    if customer_name and not conversation.customer_name:
+        conversation.customer_name = customer_name
+        updated = True
+    if customer_avatar_url and not conversation.customer_avatar_url:
+        conversation.customer_avatar_url = customer_avatar_url
+        updated = True
+    if updated:
+        session.add(conversation)
+        session.flush()
+
+
 def find_page_by_page_id(session: Session, page_id: str) -> FacebookPage | None:
     """Return the active FacebookPage record for the given page_id string."""
     return (
@@ -275,6 +320,7 @@ def process_webhook_events(
 
         event_ts = _ts_to_utc(event.fb_timestamp_ms)
         conversation = upsert_conversation(session, page, event.psid, event_ts)
+        hydrate_conversation_identity(session, conversation, page)
         message, created = upsert_message(session, conversation, event)
         results.append((conversation, message, created))
 

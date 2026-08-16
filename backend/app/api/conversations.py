@@ -42,6 +42,7 @@ def _serialize_conversation(session: Session, conv: Conversation) -> Conversatio
         page_id=conv.page_id,
         psid=conv.psid,
         customer_name=conv.customer_name,
+        customer_avatar_url=conv.customer_avatar_url,
         last_message_at=conv.last_message_at,
         last_message_preview=conversation_last_message_preview(session, conv),
         unread_count=unread_count_for_conversation(session, conv),

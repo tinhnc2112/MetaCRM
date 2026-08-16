@@ -43,6 +43,7 @@ class Conversation(Base):
     page_id: Mapped[str] = mapped_column(String(64), nullable=False)
     psid: Mapped[str] = mapped_column(String(64), nullable=False)
     customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    customer_avatar_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
@@ -51,6 +52,9 @@ class Conversation(Base):
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    notes: Mapped[list["CustomerNote"]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan", lazy="selectin"
+    )
     messages: Mapped[list[Message]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan", lazy="selectin"
     )

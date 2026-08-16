@@ -2,7 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Avatar, Badge, Button, Empty, Input, List, Spin, Typography } from "antd";
 
+import { CustomerProfilePanel } from "../components/CustomerProfilePanel";
 import { getCurrentFacebookPage } from "../services/facebookService";
+import {
+  createCustomerNote,
+  deleteCustomerNote,
+  getCustomerProfile,
+  updateCustomerNote
+} from "../services/customerService";
 import { listConversations, listMessages, markConversationRead, sendMessage } from "../services/messengerService";
 import type { Conversation, Message } from "../types/messenger";
 
@@ -43,11 +50,18 @@ export function MessengerInboxPage() {
     enabled: Boolean(selectedConversationId)
   });
 
+  const customerProfileQuery = useQuery({
+    queryKey: ["customer-profile", selectedConversationId],
+    queryFn: () => getCustomerProfile(selectedConversationId as string),
+    enabled: Boolean(selectedConversationId)
+  });
+
   const markReadMutation = useMutation({
     mutationFn: markConversationRead,
     onSuccess: async (_, conversationId) => {
       await queryClient.invalidateQueries({ queryKey: ["messenger-conversations", currentPageId] });
       await queryClient.invalidateQueries({ queryKey: ["messenger-messages", conversationId] });
+      await queryClient.invalidateQueries({ queryKey: ["customer-profile", conversationId] });
     }
   });
 
@@ -59,6 +73,7 @@ export function MessengerInboxPage() {
       setSendError(null);
       if (selectedConversationId) {
         await queryClient.invalidateQueries({ queryKey: ["messenger-messages", selectedConversationId] });
+        await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
       }
       await queryClient.invalidateQueries({ queryKey: ["messenger-conversations", currentPageId] });
       queryClient.setQueryData(["messenger-messages", selectedConversationId], (previous: any) => {
@@ -73,6 +88,34 @@ export function MessengerInboxPage() {
     },
     onError: () => {
       setSendError("Could not send the message.");
+    }
+  });
+
+  const saveCustomerNoteMutation = useMutation({
+    mutationFn: async ({ noteId, content }: { noteId: string | null; content: string }) => {
+      if (!selectedConversationId) {
+        return null;
+      }
+      if (noteId) {
+        return updateCustomerNote(noteId, content);
+      }
+      return createCustomerNote(selectedConversationId, content);
+    },
+    onSuccess: async () => {
+      if (!selectedConversationId) {
+        return;
+      }
+      await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
+    }
+  });
+
+  const deleteCustomerNoteMutation = useMutation({
+    mutationFn: deleteCustomerNote,
+    onSuccess: async () => {
+      if (!selectedConversationId) {
+        return;
+      }
+      await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
     }
   });
 
@@ -101,6 +144,7 @@ export function MessengerInboxPage() {
         return;
       }
       void queryClient.invalidateQueries({ queryKey: ["messenger-conversations", currentPageId] });
+      void queryClient.invalidateQueries({ queryKey: ["customer-profile", payload.conversation_id] });
       if (payload.conversation_id === selectedConversationId) {
         void queryClient.invalidateQueries({ queryKey: ["messenger-messages", selectedConversationId] });
       }
@@ -120,12 +164,21 @@ export function MessengerInboxPage() {
   const conversations = conversationsQuery.data?.items ?? [];
   const messages = messagesQuery.data?.items ?? [];
   const trimmedDraft = draftText.trim();
+  const customerProfile = customerProfileQuery.data ?? null;
 
   const handleSend = () => {
     if (!selectedConversationId || !trimmedDraft || sendMessageMutation.isPending) {
       return;
     }
     void sendMessageMutation.mutateAsync({ conversationId: selectedConversationId, text: trimmedDraft });
+  };
+
+  const handleSaveNote = async ({ noteId, content }: { noteId: string | null; content: string }) => {
+    await saveCustomerNoteMutation.mutateAsync({ noteId, content });
+  };
+
+  const handleDeleteNote = async (noteId: string) => {
+    await deleteCustomerNoteMutation.mutateAsync(noteId);
   };
 
   return (
@@ -210,6 +263,15 @@ export function MessengerInboxPage() {
               </div>
             )}
           </section>
+
+          <CustomerProfilePanel
+            profile={customerProfile}
+            loading={customerProfileQuery.isLoading}
+            error={customerProfileQuery.isError}
+            savingNote={saveCustomerNoteMutation.isPending || deleteCustomerNoteMutation.isPending}
+            onSaveNote={handleSaveNote}
+            onDeleteNote={handleDeleteNote}
+          />
         </div>
       )}
     </div>
@@ -225,13 +287,20 @@ function ConversationListItem({
   selected: boolean;
   onClick: () => void;
 }) {
+  const displayName = conversation.customer_name ?? conversation.psid;
   return (
     <List.Item className={selected ? "messenger-conversation selected" : "messenger-conversation"} onClick={onClick}>
       <List.Item.Meta
-        avatar={<Avatar>{(conversation.customer_name ?? conversation.psid).slice(0, 1).toUpperCase()}</Avatar>}
+        avatar={
+          conversation.customer_avatar_url ? (
+            <Avatar src={conversation.customer_avatar_url} />
+          ) : (
+            <Avatar>{displayName.slice(0, 1).toUpperCase()}</Avatar>
+          )
+        }
         title={
           <div className="messenger-conversation-title">
-            <span>{conversation.customer_name ?? conversation.psid}</span>
+            <span>{displayName}</span>
             {conversation.unread_count > 0 ? <Badge count={conversation.unread_count} /> : null}
           </div>
         }

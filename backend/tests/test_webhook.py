@@ -18,6 +18,7 @@ from app.models.auth import User
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation, Message
 from app.services.facebook.crypto import TokenCipher
+from app.services.facebook.exceptions import FacebookApiError
 from app.services.facebook.messenger import (
     FacebookWebhookSignatureError,
     RawMessageEvent,
@@ -409,6 +410,74 @@ def test_process_webhook_events_skips_unknown_page(session: Session) -> None:
     assert results == []
     # No conversation should have been created
     assert session.query(Conversation).count() == 0
+
+
+def test_profile_lookup_persists_identity_on_first_message(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_get(self, path: str, params: dict[str, object] | None = None, access_token: str | None = None):
+        return {
+            "name": "Customer One",
+            "picture": {"data": {"url": "https://example.com/customer.png"}},
+        }
+
+    monkeypatch.setattr("app.services.facebook.messenger.FacebookGraphClient.get", fake_get)
+
+    page = session.query(FacebookPage).filter(FacebookPage.page_id == "page-111").one()
+    events = parse_webhook_payload(_message_payload(psid="psid-profile-1"))
+    results = process_webhook_events(session, events)
+
+    assert len(results) == 1
+    conversation = session.query(Conversation).one()
+    assert conversation.customer_name == "Customer One"
+    assert conversation.customer_avatar_url == "https://example.com/customer.png"
+
+
+def test_profile_lookup_failure_does_not_block_message_persistence(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_get(self, path: str, params: dict[str, object] | None = None, access_token: str | None = None):
+        raise FacebookApiError("profile lookup failed")
+
+    monkeypatch.setattr("app.services.facebook.messenger.FacebookGraphClient.get", fake_get)
+
+    events = parse_webhook_payload(_message_payload(psid="psid-profile-2"))
+    results = process_webhook_events(session, events)
+
+    assert len(results) == 1
+    assert session.query(Conversation).count() == 1
+    assert session.query(Message).count() == 1
+
+
+def test_existing_identity_is_not_refetched(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, dict[str, object] | None, str | None]] = []
+
+    def fake_get(self, path: str, params: dict[str, object] | None = None, access_token: str | None = None):
+        calls.append((path, params, access_token))
+        return {
+            "name": "Customer Two",
+            "picture": {"data": {"url": "https://example.com/customer-2.png"}},
+        }
+
+    monkeypatch.setattr("app.services.facebook.messenger.FacebookGraphClient.get", fake_get)
+
+    page = session.query(FacebookPage).filter(FacebookPage.page_id == "page-111").one()
+    conversation = Conversation(
+        facebook_page_id=page.id,
+        page_id=page.page_id,
+        psid="psid-profile-3",
+        customer_name="Already Known",
+        customer_avatar_url="https://example.com/already-known.png",
+    )
+    session.add(conversation)
+    session.commit()
+
+    events = parse_webhook_payload(_message_payload(psid="psid-profile-3", mid="mid-profile-3"))
+    process_webhook_events(session, events)
+
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------

@@ -287,6 +287,7 @@ class TestListConversations:
         assert "id" in item
         assert "page_id" in item
         assert "psid" in item
+        assert "customer_avatar_url" in item
         assert "last_message_at" in item
         assert "created_at" in item
         assert "updated_at" in item
