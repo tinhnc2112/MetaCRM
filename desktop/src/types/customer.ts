@@ -1,3 +1,5 @@
+import type { PaginationMeta } from "./messenger";
+
 export type CustomerProfileConversation = {
   uuid: string;
   customer_psid: string;
@@ -7,12 +9,26 @@ export type CustomerProfileConversation = {
   unread_count: number;
 };
 
+export type CustomerTagSummary = {
+  id: number;
+  name: string;
+  slug: string;
+  description: string | null;
+};
+
+export type CustomerTag = CustomerTagSummary & {
+  customer_count: number;
+};
+
 export type CustomerTimelineItem = {
-  type: "message" | "note";
+  type: "message" | "note" | "tag";
   timestamp: string;
   preview?: string | null;
   content?: string | null;
   is_from_page?: boolean | null;
+  action?: "added" | "removed" | null;
+  tag_name?: string | null;
+  tag_slug?: string | null;
 };
 
 export type CustomerNote = {
@@ -24,8 +40,24 @@ export type CustomerNote = {
 
 export type CustomerProfileResponse = {
   conversation: CustomerProfileConversation;
+  tags: CustomerTagSummary[];
   timeline: CustomerTimelineItem[];
   notes: CustomerNote[];
+};
+
+export type CustomerTagAssignmentResponse = {
+  customer_id: string;
+  tag: CustomerTagSummary;
+  attached: boolean;
+};
+
+export type CustomerTagListResponse = {
+  items: CustomerTag[];
+};
+
+export type CustomerTagCustomersResponse = {
+  items: CustomerProfileConversation[];
+  meta: PaginationMeta;
 };
 
 export type CustomerNoteSaveRequest = {

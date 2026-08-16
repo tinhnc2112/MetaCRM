@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Avatar, Badge, Button, Empty, Input, List, Spin, Typography } from "antd";
 
 import { CustomerProfilePanel } from "../components/CustomerProfilePanel";
+import { CustomerTagManagerModal } from "../components/CustomerTagManagerModal";
 import { getCurrentFacebookPage } from "../services/facebookService";
 import {
   createCustomerNote,
@@ -10,8 +11,18 @@ import {
   getCustomerProfile,
   updateCustomerNote
 } from "../services/customerService";
+import {
+  assignCustomerTag,
+  createCustomerTag,
+  deleteCustomerTag,
+  listCustomerTagCustomers,
+  listCustomerTags,
+  removeCustomerTag,
+  updateCustomerTag
+} from "../services/customerTagService";
 import { listConversations, listMessages, markConversationRead, sendMessage } from "../services/messengerService";
 import type { Conversation, Message } from "../types/messenger";
+import type { CustomerTag } from "../types/customer";
 
 type InboxEvent = {
   type?: string;
@@ -25,6 +36,8 @@ export function MessengerInboxPage() {
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [draftText, setDraftText] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
+  const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
 
   const currentPageQuery = useQuery({
     queryKey: ["facebook-current-page"],
@@ -54,6 +67,18 @@ export function MessengerInboxPage() {
     queryKey: ["customer-profile", selectedConversationId],
     queryFn: () => getCustomerProfile(selectedConversationId as string),
     enabled: Boolean(selectedConversationId)
+  });
+
+  const pageTagsQuery = useQuery({
+    queryKey: ["customer-tags", currentPageId],
+    queryFn: listCustomerTags,
+    enabled: Boolean(currentPageId)
+  });
+
+  const tagCustomersQuery = useQuery({
+    queryKey: ["customer-tag-customers", currentPageId, selectedTagId],
+    queryFn: () => listCustomerTagCustomers(selectedTagId as number),
+    enabled: Boolean(currentPageId && tagManagerOpen && selectedTagId !== null)
   });
 
   const markReadMutation = useMutation({
@@ -109,6 +134,69 @@ export function MessengerInboxPage() {
     }
   });
 
+  const createCustomerTagMutation = useMutation({
+    mutationFn: createCustomerTag,
+    onSuccess: async (tag) => {
+      setSelectedTagId(tag.id);
+      await queryClient.invalidateQueries({ queryKey: ["customer-tags", currentPageId] });
+    }
+  });
+
+  const updateCustomerTagMutation = useMutation({
+    mutationFn: ({ tagId, input }: { tagId: number; input: { name: string; description: string | null } }) =>
+      updateCustomerTag(tagId, input),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["customer-tags", currentPageId] });
+      if (selectedConversationId) {
+        await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
+      }
+      if (selectedTagId !== null) {
+        await queryClient.invalidateQueries({ queryKey: ["customer-tag-customers", currentPageId, selectedTagId] });
+      }
+    }
+  });
+
+  const deleteCustomerTagMutation = useMutation({
+    mutationFn: deleteCustomerTag,
+    onSuccess: async (_, tagId) => {
+      if (selectedTagId === tagId) {
+        setSelectedTagId(null);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["customer-tags", currentPageId] });
+      if (selectedConversationId) {
+        await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
+      }
+    }
+  });
+
+  const assignCustomerTagMutation = useMutation({
+    mutationFn: ({ conversationId, tagId }: { conversationId: string; tagId: number }) =>
+      assignCustomerTag(conversationId, tagId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["customer-tags", currentPageId] });
+      if (selectedConversationId) {
+        await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
+      }
+      if (tagManagerOpen && selectedTagId !== null) {
+        await queryClient.invalidateQueries({ queryKey: ["customer-tag-customers", currentPageId, selectedTagId] });
+      }
+    }
+  });
+
+  const removeCustomerTagMutation = useMutation({
+    mutationFn: ({ conversationId, tagId }: { conversationId: string; tagId: number }) =>
+      removeCustomerTag(conversationId, tagId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["customer-tags", currentPageId] });
+      if (selectedConversationId) {
+        await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
+      }
+      if (tagManagerOpen && selectedTagId !== null) {
+        await queryClient.invalidateQueries({ queryKey: ["customer-tag-customers", currentPageId, selectedTagId] });
+      }
+    }
+  });
+
   const deleteCustomerNoteMutation = useMutation({
     mutationFn: deleteCustomerNote,
     onSuccess: async () => {
@@ -161,10 +249,26 @@ export function MessengerInboxPage() {
     }
   }, [selectedConversationId]);
 
+  useEffect(() => {
+    if (!tagManagerOpen) {
+      return;
+    }
+    const tags = pageTagsQuery.data?.items ?? [];
+    if (tags.length === 0) {
+      setSelectedTagId(null);
+      return;
+    }
+    if (selectedTagId === null || !tags.some((tag: CustomerTag) => tag.id === selectedTagId)) {
+      setSelectedTagId(tags[0].id);
+    }
+  }, [pageTagsQuery.data?.items, selectedTagId, tagManagerOpen]);
+
   const conversations = conversationsQuery.data?.items ?? [];
   const messages = messagesQuery.data?.items ?? [];
   const trimmedDraft = draftText.trim();
   const customerProfile = customerProfileQuery.data ?? null;
+  const pageTags = pageTagsQuery.data?.items ?? [];
+  const tagCustomers = tagCustomersQuery.data?.items ?? [];
 
   const handleSend = () => {
     if (!selectedConversationId || !trimmedDraft || sendMessageMutation.isPending) {
@@ -179,6 +283,32 @@ export function MessengerInboxPage() {
 
   const handleDeleteNote = async (noteId: string) => {
     await deleteCustomerNoteMutation.mutateAsync(noteId);
+  };
+
+  const handleAssignTag = async (tagId: number) => {
+    if (!selectedConversationId) {
+      return;
+    }
+    await assignCustomerTagMutation.mutateAsync({ conversationId: selectedConversationId, tagId });
+  };
+
+  const handleRemoveTag = async (tagId: number) => {
+    if (!selectedConversationId) {
+      return;
+    }
+    await removeCustomerTagMutation.mutateAsync({ conversationId: selectedConversationId, tagId });
+  };
+
+  const handleCreateTag = async (input: { name: string; description: string | null }) => {
+    await createCustomerTagMutation.mutateAsync(input);
+  };
+
+  const handleUpdateTag = async (tagId: number, input: { name: string; description: string | null }) => {
+    await updateCustomerTagMutation.mutateAsync({ tagId, input });
+  };
+
+  const handleDeleteTag = async (tagId: number) => {
+    await deleteCustomerTagMutation.mutateAsync(tagId);
   };
 
   return (
@@ -266,14 +396,36 @@ export function MessengerInboxPage() {
 
           <CustomerProfilePanel
             profile={customerProfile}
+            pageTags={pageTags}
             loading={customerProfileQuery.isLoading}
             error={customerProfileQuery.isError}
             savingNote={saveCustomerNoteMutation.isPending || deleteCustomerNoteMutation.isPending}
+            savingTag={assignCustomerTagMutation.isPending || removeCustomerTagMutation.isPending}
             onSaveNote={handleSaveNote}
             onDeleteNote={handleDeleteNote}
+            onAssignTag={handleAssignTag}
+            onRemoveTag={handleRemoveTag}
+            onManageTags={() => setTagManagerOpen(true)}
           />
         </div>
       )}
+
+      <CustomerTagManagerModal
+        open={tagManagerOpen}
+        tags={pageTags}
+        selectedTagId={selectedTagId}
+        customers={tagCustomers}
+        customersLoading={tagCustomersQuery.isLoading}
+        onClose={() => setTagManagerOpen(false)}
+        onSelectTag={setSelectedTagId}
+        onCreateTag={handleCreateTag}
+        onUpdateTag={handleUpdateTag}
+        onDeleteTag={handleDeleteTag}
+        onSelectConversation={(conversationId) => {
+          setSelectedConversationId(conversationId);
+          setTagManagerOpen(false);
+        }}
+      />
     </div>
   );
 }

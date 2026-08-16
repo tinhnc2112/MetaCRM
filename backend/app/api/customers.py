@@ -11,6 +11,8 @@ from app.schemas.customers import (
     CustomerNoteCreateRequest,
     CustomerNoteDeleteResponse,
     CustomerNoteResponse,
+    CustomerTagAssignmentResponse,
+    CustomerTagSummaryResponse,
     CustomerNoteUpdateRequest,
     CustomerProfileConversationResponse,
     CustomerProfileResponse,
@@ -21,6 +23,10 @@ from app.services.facebook.customers import (
     delete_customer_note,
     get_customer_profile,
     update_customer_note,
+)
+from app.services.facebook.customer_tags import (
+    assign_customer_tag_to_conversation,
+    remove_customer_tag_from_conversation,
 )
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -38,6 +44,15 @@ def _serialize_profile(profile) -> CustomerProfileResponse:
             last_message_at=profile.conversation.last_message_at,
             unread_count=profile.unread_count,
         ),
+        tags=[
+            CustomerTagSummaryResponse(
+                id=tag.id,
+                name=tag.name,
+                slug=tag.slug,
+                description=tag.description,
+            )
+            for tag in profile.tags
+        ],
         timeline=[
             CustomerTimelineResponse(
                 type=item.type,
@@ -45,6 +60,9 @@ def _serialize_profile(profile) -> CustomerProfileResponse:
                 preview=item.preview,
                 content=item.content,
                 is_from_page=item.is_from_page,
+                action=item.action,
+                tag_name=item.tag_name,
+                tag_slug=item.tag_slug,
             )
             for item in profile.timeline
         ],
@@ -125,3 +143,67 @@ def delete_customer_note_endpoint(
     if note is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
     return CustomerNoteDeleteResponse(deleted=True, note_id=str(note.uuid))
+
+
+@router.get("/{conversation_id}/tags", response_model=list[CustomerTagSummaryResponse])
+def customer_tags_endpoint(
+    conversation_id: str,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> list[CustomerTagSummaryResponse]:
+    profile = get_customer_profile(session, current_user, conversation_id)
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return [
+        CustomerTagSummaryResponse(
+            id=tag.id,
+            name=tag.name,
+            slug=tag.slug,
+            description=tag.description,
+        )
+        for tag in profile.tags
+    ]
+
+
+@router.post("/{conversation_id}/tags/{tag_id}", response_model=CustomerTagAssignmentResponse)
+def assign_customer_tag_endpoint(
+    conversation_id: str,
+    tag_id: int,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> CustomerTagAssignmentResponse:
+    result = assign_customer_tag_to_conversation(session, current_user, conversation_id, tag_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation or tag not found")
+    return CustomerTagAssignmentResponse(
+        customer_id=conversation_id,
+        tag=CustomerTagSummaryResponse(
+            id=result.tag.id,
+            name=result.tag.name,
+            slug=result.tag.slug,
+            description=result.tag.description,
+        ),
+        attached=result.attached,
+    )
+
+
+@router.delete("/{conversation_id}/tags/{tag_id}", response_model=CustomerTagAssignmentResponse)
+def remove_customer_tag_endpoint(
+    conversation_id: str,
+    tag_id: int,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> CustomerTagAssignmentResponse:
+    result = remove_customer_tag_from_conversation(session, current_user, conversation_id, tag_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation or tag not found")
+    return CustomerTagAssignmentResponse(
+        customer_id=conversation_id,
+        tag=CustomerTagSummaryResponse(
+            id=result.tag.id,
+            name=result.tag.name,
+            slug=result.tag.slug,
+            description=result.tag.description,
+        ),
+        attached=result.attached,
+    )

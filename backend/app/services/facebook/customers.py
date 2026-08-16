@@ -8,8 +8,9 @@ from typing import Literal
 from uuid import UUID
 
 from app.models.auth import User
-from app.models.customers import CustomerNote
+from app.models.customers import CustomerNote, CustomerTag
 from app.models.messenger import Conversation, Message
+from app.services.facebook.customer_tags import list_tag_events_for_conversation, list_tags_for_conversation
 from app.services.facebook.conversations import (
     get_conversation_for_user,
     get_user_page_ids,
@@ -28,17 +29,21 @@ def _utc(value: datetime | None) -> datetime | None:
 
 @dataclass(frozen=True)
 class CustomerTimelineItem:
-    type: Literal["message", "note"]
+    type: Literal["message", "note", "tag"]
     timestamp: datetime
     preview: str | None = None
     content: str | None = None
     is_from_page: bool | None = None
+    action: Literal["added", "removed"] | None = None
+    tag_name: str | None = None
+    tag_slug: str | None = None
 
 
 @dataclass(frozen=True)
 class CustomerProfileData:
     conversation: Conversation
     unread_count: int
+    tags: list[CustomerTag]
     timeline: list[CustomerTimelineItem]
     notes: list[CustomerNote]
 
@@ -47,7 +52,11 @@ def _message_preview(message: Message) -> str:
     return message.text or message.postback_payload or message.event_type
 
 
-def _build_timeline(messages: list[Message], notes: list[CustomerNote]) -> list[CustomerTimelineItem]:
+def _build_timeline(
+    messages: list[Message],
+    notes: list[CustomerNote],
+    tag_events: list[CustomerTimelineItem],
+) -> list[CustomerTimelineItem]:
     items: list[CustomerTimelineItem] = []
     for message in messages:
         timestamp = _utc(message.sent_at or message.created_at)
@@ -74,6 +83,7 @@ def _build_timeline(messages: list[Message], notes: list[CustomerNote]) -> list[
             )
         )
 
+    items.extend(tag_events)
     items.sort(key=lambda item: item.timestamp, reverse=True)
     return items
 
@@ -96,6 +106,18 @@ def get_customer_profile(session: Session, user: User, conversation_id: str) -> 
         )
         .all()
     )
+    tags = list_tags_for_conversation(session, conversation)
+    tag_events = [
+        CustomerTimelineItem(
+            type="tag",
+            timestamp=event.timestamp,
+            content=f"Tag {event.action}: {event.tag_name}",
+            action=event.action,
+            tag_name=event.tag_name,
+            tag_slug=event.tag_slug,
+        )
+        for event in list_tag_events_for_conversation(session, conversation)
+    ]
     messages = (
         session.query(Message)
         .filter(Message.conversation_id == conversation.id)
@@ -105,7 +127,8 @@ def get_customer_profile(session: Session, user: User, conversation_id: str) -> 
     return CustomerProfileData(
         conversation=conversation,
         unread_count=unread_count_for_conversation(session, conversation),
-        timeline=_build_timeline(messages, notes),
+        tags=tags,
+        timeline=_build_timeline(messages, notes, tag_events),
         notes=notes,
     )
 

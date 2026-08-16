@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from app.db.base import Base
 from app.models.base import utc_now
-from sqlalchemy import DateTime, ForeignKey, Integer, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
@@ -30,4 +30,76 @@ class CustomerNote(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     conversation: Mapped["Conversation"] = relationship(back_populates="notes")
+    user: Mapped["User"] = relationship()
+
+
+class CustomerTag(Base):
+    __tablename__ = "customer_tags"
+    __table_args__ = (
+        UniqueConstraint("facebook_page_id", "name", name="uq_customer_tags_page_name"),
+        UniqueConstraint("facebook_page_id", "slug", name="uq_customer_tags_page_slug"),
+        Index("ix_customer_tags_facebook_page_id", "facebook_page_id"),
+        Index("ix_customer_tags_slug", "slug"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    facebook_page_id: Mapped[int] = mapped_column(
+        ForeignKey("facebook_pages.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    page: Mapped["FacebookPage"] = relationship()
+    assignments: Mapped[list["CustomerTagAssignment"]] = relationship(
+        back_populates="tag", cascade="all, delete-orphan", lazy="selectin"
+    )
+    events: Mapped[list["CustomerTagEvent"]] = relationship(back_populates="tag", lazy="selectin")
+
+
+class CustomerTagAssignment(Base):
+    __tablename__ = "customer_tag_assignments"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "tag_id", name="uq_customer_tag_assignments_conversation_tag"),
+        Index("ix_customer_tag_assignments_conversation_id", "conversation_id"),
+        Index("ix_customer_tag_assignments_tag_id", "tag_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("facebook_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    tag_id: Mapped[int] = mapped_column(ForeignKey("customer_tags.id", ondelete="CASCADE"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    conversation: Mapped["Conversation"] = relationship(back_populates="tag_assignments")
+    tag: Mapped["CustomerTag"] = relationship(back_populates="assignments")
+
+
+class CustomerTagEvent(Base):
+    __tablename__ = "customer_tag_events"
+    __table_args__ = (
+        Index("ix_customer_tag_events_conversation_id", "conversation_id"),
+        Index("ix_customer_tag_events_tag_id", "tag_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("facebook_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    tag_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customer_tags.id", ondelete="SET NULL"), nullable=True
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    tag_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    tag_slug_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    conversation: Mapped["Conversation"] = relationship(back_populates="tag_events")
+    tag: Mapped["CustomerTag"] = relationship(back_populates="events")
     user: Mapped["User"] = relationship()

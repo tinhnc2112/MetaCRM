@@ -209,6 +209,22 @@ body {
   gap: 12px;
 }
 
+.messenger-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.messenger-tag-assigner {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.messenger-tag-assigner .ant-select {
+  flex: 1;
+}
+
 .messenger-profile-section-header h5 {
   margin: 0;
 }
@@ -276,6 +292,54 @@ body {
 .messenger-timeline-body {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.customer-tag-manager {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 16px;
+}
+
+.customer-tag-manager-section {
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.customer-tag-manager-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.customer-tag-manager-item {
+  padding-inline: 0 !important;
+}
+
+.customer-tag-manager-tag {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.customer-tag-manager-slug {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.customer-tag-manager-customers {
+  grid-column: 1 / -1;
+}
+
+.customer-tag-manager-customer {
+  padding-inline: 0 !important;
 }
 
 .messenger-loading {

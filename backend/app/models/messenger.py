@@ -55,6 +55,12 @@ class Conversation(Base):
     notes: Mapped[list["CustomerNote"]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan", lazy="selectin"
     )
+    tag_assignments: Mapped[list["CustomerTagAssignment"]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan", lazy="selectin"
+    )
+    tag_events: Mapped[list["CustomerTagEvent"]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan", lazy="selectin"
+    )
     messages: Mapped[list[Message]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan", lazy="selectin"
     )

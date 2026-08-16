@@ -1,40 +1,81 @@
-import { DeleteOutlined, EditOutlined, FileTextOutlined, MessageOutlined, SaveOutlined } from "@ant-design/icons";
-import { Avatar, Badge, Button, Empty, Input, List, Space, Spin, Tag, Typography } from "antd";
+import {
+  DeleteOutlined,
+  EditOutlined,
+  FileTextOutlined,
+  MessageOutlined,
+  SaveOutlined,
+  TagOutlined
+} from "@ant-design/icons";
+import { Avatar, Badge, Button, Empty, Input, List, Select, Space, Spin, Tag, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
-import type { CustomerProfileResponse, CustomerNoteSaveRequest } from "../types/customer";
+import type {
+  CustomerProfileResponse,
+  CustomerNoteSaveRequest,
+  CustomerTag
+} from "../types/customer";
 
 type CustomerProfilePanelProps = {
   profile: CustomerProfileResponse | null;
+  pageTags: CustomerTag[];
   loading: boolean;
   error: boolean;
   savingNote: boolean;
+  savingTag: boolean;
   onSaveNote: (input: CustomerNoteSaveRequest) => Promise<void>;
   onDeleteNote: (noteId: string) => Promise<void>;
+  onAssignTag: (tagId: number) => Promise<void>;
+  onRemoveTag: (tagId: number) => Promise<void>;
+  onManageTags: () => void;
 };
 
 export function CustomerProfilePanel({
   profile,
+  pageTags,
   loading,
   error,
   savingNote,
+  savingTag,
   onSaveNote,
-  onDeleteNote
+  onDeleteNote,
+  onAssignTag,
+  onRemoveTag,
+  onManageTags
 }: CustomerProfilePanelProps) {
   const [noteId, setNoteId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
 
   const conversation = profile?.conversation ?? null;
   const notes = profile?.notes ?? [];
   const timeline = profile?.timeline ?? [];
+  const assignedTags = profile?.tags ?? [];
 
   useEffect(() => {
     setNoteId(null);
     setDraft("");
+    setSelectedTagId(null);
   }, [conversation?.uuid]);
+
+  useEffect(() => {
+    const assignedTagIds = new Set(assignedTags.map((tag) => tag.id));
+    const availableTags = pageTags.filter((tag) => !assignedTagIds.has(tag.id));
+    if (availableTags.length === 0) {
+      setSelectedTagId(null);
+      return;
+    }
+    if (selectedTagId === null || !availableTags.some((tag) => tag.id === selectedTagId)) {
+      setSelectedTagId(availableTags[0].id);
+    }
+  }, [assignedTags, pageTags, selectedTagId]);
 
   const headerName = useMemo(() => conversation?.customer_name ?? conversation?.customer_psid ?? "Customer", [conversation]);
   const initial = headerName.slice(0, 1).toUpperCase();
+
+  const availableTags = useMemo(() => {
+    const assignedTagIds = new Set(assignedTags.map((tag) => tag.id));
+    return pageTags.filter((tag) => !assignedTagIds.has(tag.id));
+  }, [assignedTags, pageTags]);
 
   const handleSave = async () => {
     const content = draft.trim();
@@ -44,6 +85,14 @@ export function CustomerProfilePanel({
     await onSaveNote({ noteId, content });
     setNoteId(null);
     setDraft("");
+  };
+
+  const handleAssignTag = async () => {
+    if (selectedTagId === null) {
+      return;
+    }
+    await onAssignTag(selectedTagId);
+    setSelectedTagId(null);
   };
 
   if (!conversation && loading) {
@@ -99,6 +148,50 @@ export function CustomerProfilePanel({
           <Typography.Text copyable>{conversation.customer_psid}</Typography.Text>
         </div>
       </div>
+
+      <section className="messenger-profile-section">
+        <div className="messenger-profile-section-header">
+          <Typography.Title level={5}>Tags</Typography.Title>
+          <Button size="small" onClick={onManageTags}>
+            Manage tags
+          </Button>
+        </div>
+        {assignedTags.length === 0 ? (
+          <Empty description="No tags assigned yet" />
+        ) : (
+          <div className="messenger-tag-list">
+            {assignedTags.map((tag) => (
+              <Tag
+                key={tag.id}
+                closable
+                onClose={(event) => {
+                  event.preventDefault();
+                  void onRemoveTag(tag.id);
+                }}
+              >
+                {tag.name}
+              </Tag>
+            ))}
+          </div>
+        )}
+        <div className="messenger-tag-assigner">
+          <Select
+            showSearch
+            placeholder={availableTags.length === 0 ? "No more tags available" : "Select a tag to assign"}
+            optionFilterProp="label"
+            value={selectedTagId ?? undefined}
+            onChange={(value) => setSelectedTagId(value)}
+            options={availableTags.map((tag) => ({
+              value: tag.id,
+              label: tag.name
+            }))}
+            disabled={availableTags.length === 0}
+          />
+          <Button type="primary" onClick={() => void handleAssignTag()} loading={savingTag} disabled={selectedTagId === null}>
+            Assign tag
+          </Button>
+        </div>
+      </section>
 
       <section className="messenger-profile-section">
         <div className="messenger-profile-section-header">
@@ -183,12 +276,22 @@ export function CustomerProfilePanel({
           <div className="messenger-timeline">
             {timeline.map((item) => {
               const isNote = item.type === "note";
-              const label = isNote ? "Internal note added" : item.is_from_page ? "Agent replied" : "Customer sent message";
-              const color = isNote ? "gold" : item.is_from_page ? "blue" : "green";
+              const isTag = item.type === "tag";
+              const label = isTag
+                ? item.action === "removed"
+                  ? `Tag removed${item.tag_name ? `: ${item.tag_name}` : ""}`
+                  : `Tag added${item.tag_name ? `: ${item.tag_name}` : ""}`
+                : isNote
+                  ? "Internal note added"
+                  : item.is_from_page
+                    ? "Agent replied"
+                    : "Customer sent message";
+              const color = isTag ? (item.action === "removed" ? "volcano" : "purple") : isNote ? "gold" : item.is_from_page ? "blue" : "green";
+              const icon = isTag ? <TagOutlined /> : isNote ? <FileTextOutlined /> : <MessageOutlined />;
               return (
                 <article key={`${item.type}-${item.timestamp}-${item.preview ?? item.content ?? ""}`} className="messenger-timeline-item">
                   <div className="messenger-timeline-header">
-                    <Tag color={color} icon={isNote ? <FileTextOutlined /> : <MessageOutlined />}>
+                    <Tag color={color} icon={icon}>
                       {label}
                     </Tag>
                     <Typography.Text type="secondary">{formatTimestamp(item.timestamp)}</Typography.Text>
