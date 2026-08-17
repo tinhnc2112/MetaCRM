@@ -5,6 +5,7 @@ import { DashboardPage } from "../pages/DashboardPage";
 import { FacebookSettingsPage } from "../pages/FacebookSettingsPage";
 import { CustomerSegmentsPage } from "../pages/CustomerSegmentsPage";
 import { CustomerDuplicatesPage } from "../pages/CustomerDuplicatesPage";
+import { CustomerBrowserPage } from "../pages/CustomerBrowserPage";
 import { MessengerInboxPage } from "../pages/MessengerInboxPage";
 import { LoginPage } from "../pages/LoginPage";
 
@@ -14,6 +15,8 @@ export function AppRoutes() {
       <Route path="/login" element={<LoginPage />} />
       <Route element={<AppLayout />}>
         <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/customers" element={<CustomerBrowserPage />} />
+        <Route path="/customers/:customerId" element={<CustomerBrowserPage />} />
         <Route path="/messenger" element={<MessengerInboxPage />} />
         <Route path="/settings/facebook" element={<FacebookSettingsPage />} />
         <Route path="/settings/segments" element={<CustomerSegmentsPage />} />

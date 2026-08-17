@@ -59,15 +59,15 @@ export function CustomerDuplicatesPage() {
   }, [candidates.length, selectedIndex]);
 
   const primaryProfileQuery = useQuery({
-    queryKey: ["customer-profile", selection?.primaryCustomerId],
+    queryKey: ["customer-profile", currentPageId, selection?.primaryCustomerId],
     queryFn: () => getCustomerProfile(selection?.primaryCustomerId ?? ""),
-    enabled: Boolean(selection?.primaryCustomerId)
+    enabled: Boolean(currentPageId && selection?.primaryCustomerId)
   });
 
   const secondaryProfileQuery = useQuery({
-    queryKey: ["customer-profile", selection?.secondaryCustomerId],
+    queryKey: ["customer-profile", currentPageId, selection?.secondaryCustomerId],
     queryFn: () => getCustomerProfile(selection?.secondaryCustomerId ?? ""),
-    enabled: Boolean(selection?.secondaryCustomerId)
+    enabled: Boolean(currentPageId && selection?.secondaryCustomerId)
   });
 
   const mergeMutation = useMutation({
@@ -82,8 +82,8 @@ export function CustomerDuplicatesPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["customer-duplicates", currentPageId] }),
         queryClient.invalidateQueries({ queryKey: ["messenger-conversations", currentPageId] }),
-        queryClient.invalidateQueries({ queryKey: ["customer-profile", selection?.primaryCustomerId] }),
-        queryClient.invalidateQueries({ queryKey: ["customer-profile", selection?.secondaryCustomerId] })
+        queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, selection?.primaryCustomerId] }),
+        queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, selection?.secondaryCustomerId] })
       ]);
       setMergeModalOpen(false);
       void message.success("Customers merged.");

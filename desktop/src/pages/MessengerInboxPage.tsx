@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Avatar, Badge, Button, Empty, Input, List, Spin, Typography } from "antd";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { CustomerProfilePanel } from "../components/CustomerProfilePanel";
 import { CustomerTagManagerModal } from "../components/CustomerTagManagerModal";
@@ -33,11 +34,13 @@ type InboxEvent = {
 
 export function MessengerInboxPage() {
   const queryClient = useQueryClient();
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [draftText, setDraftText] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
+  const selectedConversationId = searchParams.get("conversationId");
 
   const currentPageQuery = useQuery({
     queryKey: ["facebook-current-page"],
@@ -58,13 +61,13 @@ export function MessengerInboxPage() {
   );
 
   const messagesQuery = useQuery({
-    queryKey: ["messenger-messages", selectedConversationId],
+    queryKey: ["messenger-messages", currentPageId, selectedConversationId],
     queryFn: () => listMessages(selectedConversationId as string),
     enabled: Boolean(selectedConversationId)
   });
 
   const customerProfileQuery = useQuery({
-    queryKey: ["customer-profile", selectedConversationId],
+    queryKey: ["customer-profile", currentPageId, selectedConversationId],
     queryFn: () => getCustomerProfile(selectedConversationId as string),
     enabled: Boolean(selectedConversationId)
   });
@@ -85,8 +88,8 @@ export function MessengerInboxPage() {
     mutationFn: markConversationRead,
     onSuccess: async (_, conversationId) => {
       await queryClient.invalidateQueries({ queryKey: ["messenger-conversations", currentPageId] });
-      await queryClient.invalidateQueries({ queryKey: ["messenger-messages", conversationId] });
-      await queryClient.invalidateQueries({ queryKey: ["customer-profile", conversationId] });
+      await queryClient.invalidateQueries({ queryKey: ["messenger-messages", currentPageId, conversationId] });
+      await queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, conversationId] });
     }
   });
 
@@ -97,11 +100,11 @@ export function MessengerInboxPage() {
       setDraftText("");
       setSendError(null);
       if (selectedConversationId) {
-        await queryClient.invalidateQueries({ queryKey: ["messenger-messages", selectedConversationId] });
-        await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
+        await queryClient.invalidateQueries({ queryKey: ["messenger-messages", currentPageId, selectedConversationId] });
+        await queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, selectedConversationId] });
       }
       await queryClient.invalidateQueries({ queryKey: ["messenger-conversations", currentPageId] });
-      queryClient.setQueryData(["messenger-messages", selectedConversationId], (previous: any) => {
+      queryClient.setQueryData(["messenger-messages", currentPageId, selectedConversationId], (previous: any) => {
         if (!previous?.items) {
           return previous;
         }
@@ -130,7 +133,7 @@ export function MessengerInboxPage() {
       if (!selectedConversationId) {
         return;
       }
-      await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
+      await queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, selectedConversationId] });
     }
   });
 
@@ -148,7 +151,7 @@ export function MessengerInboxPage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["customer-tags", currentPageId] });
       if (selectedConversationId) {
-        await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
+        await queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, selectedConversationId] });
       }
       if (selectedTagId !== null) {
         await queryClient.invalidateQueries({ queryKey: ["customer-tag-customers", currentPageId, selectedTagId] });
@@ -164,7 +167,7 @@ export function MessengerInboxPage() {
       }
       await queryClient.invalidateQueries({ queryKey: ["customer-tags", currentPageId] });
       if (selectedConversationId) {
-        await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
+        await queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, selectedConversationId] });
       }
     }
   });
@@ -175,7 +178,7 @@ export function MessengerInboxPage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["customer-tags", currentPageId] });
       if (selectedConversationId) {
-        await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
+        await queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, selectedConversationId] });
       }
       if (tagManagerOpen && selectedTagId !== null) {
         await queryClient.invalidateQueries({ queryKey: ["customer-tag-customers", currentPageId, selectedTagId] });
@@ -189,7 +192,7 @@ export function MessengerInboxPage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["customer-tags", currentPageId] });
       if (selectedConversationId) {
-        await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
+        await queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, selectedConversationId] });
       }
       if (tagManagerOpen && selectedTagId !== null) {
         await queryClient.invalidateQueries({ queryKey: ["customer-tag-customers", currentPageId, selectedTagId] });
@@ -203,7 +206,7 @@ export function MessengerInboxPage() {
       if (!selectedConversationId) {
         return;
       }
-      await queryClient.invalidateQueries({ queryKey: ["customer-profile", selectedConversationId] });
+      await queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, selectedConversationId] });
     }
   });
 
@@ -232,9 +235,9 @@ export function MessengerInboxPage() {
         return;
       }
       void queryClient.invalidateQueries({ queryKey: ["messenger-conversations", currentPageId] });
-      void queryClient.invalidateQueries({ queryKey: ["customer-profile", payload.conversation_id] });
+      void queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, payload.conversation_id] });
       if (payload.conversation_id === selectedConversationId) {
-        void queryClient.invalidateQueries({ queryKey: ["messenger-messages", selectedConversationId] });
+        void queryClient.invalidateQueries({ queryKey: ["messenger-messages", currentPageId, selectedConversationId] });
       }
     });
 
@@ -347,7 +350,7 @@ export function MessengerInboxPage() {
                   <ConversationListItem
                     conversation={conversation}
                     selected={conversation.id === selectedConversationId}
-                    onClick={() => setSelectedConversationId(conversation.id)}
+                    onClick={() => setSearchParams(buildConversationSearchParams(searchParams, conversation.id), { replace: true })}
                   />
                 )}
               />
@@ -406,6 +409,10 @@ export function MessengerInboxPage() {
             onAssignTag={handleAssignTag}
             onRemoveTag={handleRemoveTag}
             onManageTags={() => setTagManagerOpen(true)}
+            onOpenCustomer={(customerId) => navigate(`/customers/${encodeURIComponent(customerId)}`)}
+            onSelectConversation={(conversationId) =>
+              setSearchParams(buildConversationSearchParams(searchParams, conversationId), { replace: true })
+            }
           />
         </div>
       )}
@@ -422,7 +429,7 @@ export function MessengerInboxPage() {
         onUpdateTag={handleUpdateTag}
         onDeleteTag={handleDeleteTag}
         onSelectConversation={(conversationId) => {
-          setSelectedConversationId(conversationId);
+          setSearchParams(buildConversationSearchParams(searchParams, conversationId), { replace: true });
           setTagManagerOpen(false);
         }}
       />
@@ -522,4 +529,10 @@ function formatTimestamp(value: string | null): string {
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function buildConversationSearchParams(searchParams: URLSearchParams, conversationId: string): URLSearchParams {
+  const next = new URLSearchParams(searchParams);
+  next.set("conversationId", conversationId);
+  return next;
 }

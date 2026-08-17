@@ -9,6 +9,17 @@ export type CustomerProfileConversation = {
   unread_count: number;
 };
 
+export type CustomerSummary = {
+  uuid: string;
+  name: string | null;
+  phone: string | null;
+  email: string | null;
+  avatar_url: string | null;
+  last_message_at: string | null;
+  conversation_count: number;
+  unread_count: number;
+};
+
 export type CustomerTagSummary = {
   id: number;
   name: string;
@@ -39,10 +50,21 @@ export type CustomerNote = {
 };
 
 export type CustomerProfileResponse = {
+  customer: CustomerSummary | null;
   conversation: CustomerProfileConversation;
+  conversations: CustomerProfileConversation[];
   tags: CustomerTagSummary[];
   timeline: CustomerTimelineItem[];
   notes: CustomerNote[];
+};
+
+export type CustomerListItem = CustomerSummary & {
+  tags: CustomerTagSummary[];
+};
+
+export type CustomerListResponse = {
+  items: CustomerListItem[];
+  meta: PaginationMeta;
 };
 
 export type CustomerDuplicateCandidate = {

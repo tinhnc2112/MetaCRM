@@ -4,6 +4,7 @@ import {
   FilterOutlined,
   MessageOutlined,
   SettingOutlined,
+  TeamOutlined,
   UserSwitchOutlined
 } from "@ant-design/icons";
 import { Layout, Menu } from "antd";
@@ -12,6 +13,11 @@ import { useLocation, useNavigate } from "react-router-dom";
 export function AppSidebar() {
   const location = useLocation();
   const navigate = useNavigate();
+  const selectedKey = location.pathname.startsWith("/customers")
+    ? "/customers"
+    : location.pathname.startsWith("/messenger")
+      ? "/messenger"
+      : location.pathname;
 
   return (
     <Layout.Sider className="app-sidebar" width={232}>
@@ -19,13 +25,18 @@ export function AppSidebar() {
       <Menu
         mode="inline"
         defaultOpenKeys={["settings"]}
-        selectedKeys={[location.pathname]}
+        selectedKeys={[selectedKey]}
         onClick={({ key }) => navigate(key)}
         items={[
           {
             key: "/dashboard",
             icon: <DashboardOutlined />,
             label: "Dashboard"
+          },
+          {
+            key: "/customers",
+            icon: <TeamOutlined />,
+            label: "Customers"
           },
           {
             key: "/messenger",

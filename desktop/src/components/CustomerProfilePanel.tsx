@@ -3,7 +3,9 @@ import {
   EditOutlined,
   FileTextOutlined,
   MessageOutlined,
+  SwapOutlined,
   SaveOutlined,
+  TeamOutlined,
   TagOutlined
 } from "@ant-design/icons";
 import { Avatar, Badge, Button, Empty, Input, List, Select, Space, Spin, Tag, Typography } from "antd";
@@ -27,6 +29,9 @@ type CustomerProfilePanelProps = {
   onAssignTag: (tagId: number) => Promise<void>;
   onRemoveTag: (tagId: number) => Promise<void>;
   onManageTags: () => void;
+  onOpenCustomer?: (customerId: string) => void;
+  onOpenConversation?: (conversationId: string) => void;
+  onSelectConversation?: (conversationId: string) => void;
 };
 
 export function CustomerProfilePanel({
@@ -40,16 +45,21 @@ export function CustomerProfilePanel({
   onDeleteNote,
   onAssignTag,
   onRemoveTag,
-  onManageTags
+  onManageTags,
+  onOpenCustomer,
+  onOpenConversation,
+  onSelectConversation
 }: CustomerProfilePanelProps) {
   const [noteId, setNoteId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
 
   const conversation = profile?.conversation ?? null;
+  const customer = profile?.customer ?? null;
   const notes = profile?.notes ?? [];
   const timeline = profile?.timeline ?? [];
   const assignedTags = profile?.tags ?? [];
+  const customerConversations = profile?.conversations ?? [];
 
   useEffect(() => {
     setNoteId(null);
@@ -69,8 +79,14 @@ export function CustomerProfilePanel({
     }
   }, [assignedTags, pageTags, selectedTagId]);
 
-  const headerName = useMemo(() => conversation?.customer_name ?? conversation?.customer_psid ?? "Customer", [conversation]);
+  const headerName = useMemo(
+    () => customer?.name ?? conversation?.customer_name ?? conversation?.customer_psid ?? "Customer",
+    [conversation, customer]
+  );
   const initial = headerName.slice(0, 1).toUpperCase();
+  const customerUuid = customer?.uuid ?? null;
+  const customerPhone = customer?.phone ?? null;
+  const customerEmail = customer?.email ?? null;
 
   const availableTags = useMemo(() => {
     const assignedTagIds = new Set(assignedTags.map((tag) => tag.id));
@@ -132,22 +148,113 @@ export function CustomerProfilePanel({
           )}
           <div>
             <Typography.Title level={4}>{headerName}</Typography.Title>
-            <Typography.Text type="secondary">{conversation.customer_psid}</Typography.Text>
+            <Typography.Text type="secondary">
+              {customerUuid ? `Customer ${customerUuid}` : conversation.customer_psid}
+            </Typography.Text>
           </div>
         </div>
-        <Badge count={conversation.unread_count} overflowCount={99} />
+        <Space direction="vertical" align="end" size={8}>
+          <Badge count={conversation.unread_count} overflowCount={99} />
+          <Space wrap>
+            {customerUuid && onOpenCustomer ? (
+              <Button size="small" icon={<TeamOutlined />} onClick={() => onOpenCustomer(customerUuid)}>
+                Open customer
+              </Button>
+            ) : null}
+            {onOpenConversation ? (
+              <Button size="small" icon={<SwapOutlined />} onClick={() => onOpenConversation(conversation.uuid)}>
+                Open in Messenger
+              </Button>
+            ) : null}
+          </Space>
+        </Space>
       </header>
 
       <div className="messenger-profile-meta">
         <div>
+          <span className="messenger-profile-label">Customer UUID</span>
+          <Typography.Text copyable={customerUuid ? { text: customerUuid } : undefined}>
+            {customerUuid ?? "Unavailable"}
+          </Typography.Text>
+        </div>
+        <div>
+          <span className="messenger-profile-label">Phone</span>
+          <Typography.Text copyable={customerPhone ? { text: customerPhone } : undefined}>
+            {customerPhone ?? "Unavailable"}
+          </Typography.Text>
+        </div>
+        <div>
+          <span className="messenger-profile-label">Email</span>
+          <Typography.Text copyable={customerEmail ? { text: customerEmail } : undefined}>
+            {customerEmail ?? "Unavailable"}
+          </Typography.Text>
+        </div>
+        <div>
           <span className="messenger-profile-label">Last interaction</span>
           <Typography.Text>{formatTimestamp(conversation.last_message_at)}</Typography.Text>
+        </div>
+        <div>
+          <span className="messenger-profile-label">Conversation UUID</span>
+          <Typography.Text copyable>{conversation.uuid}</Typography.Text>
         </div>
         <div>
           <span className="messenger-profile-label">PSID</span>
           <Typography.Text copyable>{conversation.customer_psid}</Typography.Text>
         </div>
       </div>
+
+      {customerConversations.length > 1 ? (
+        <section className="messenger-profile-section">
+          <div className="messenger-profile-section-header">
+            <Typography.Title level={5}>Conversations</Typography.Title>
+          </div>
+          <List
+            dataSource={customerConversations}
+            renderItem={(item) => {
+              const displayName = item.customer_name ?? item.customer_psid;
+              const isCurrent = item.uuid === conversation.uuid;
+              return (
+                <List.Item className={isCurrent ? "messenger-conversation selected" : "messenger-conversation"}>
+                  <List.Item.Meta
+                    avatar={
+                      item.customer_avatar_url ? (
+                        <Avatar src={item.customer_avatar_url} />
+                      ) : (
+                        <Avatar>{displayName.slice(0, 1).toUpperCase()}</Avatar>
+                      )
+                    }
+                    title={
+                      <div className="messenger-conversation-title">
+                        <span>{displayName}</span>
+                        {item.unread_count > 0 ? <Badge count={item.unread_count} /> : null}
+                      </div>
+                    }
+                    description={
+                      <div className="messenger-conversation-meta">
+                        <span>{item.customer_psid}</span>
+                        <span>{formatTimestamp(item.last_message_at)}</span>
+                      </div>
+                    }
+                  />
+                  <Space>
+                    {isCurrent ? <Tag color="blue">Current</Tag> : null}
+                    {onSelectConversation && !isCurrent ? (
+                      <Button size="small" onClick={() => onSelectConversation(item.uuid)}>
+                        Use
+                      </Button>
+                    ) : null}
+                    {onOpenConversation ? (
+                      <Button size="small" onClick={() => onOpenConversation(item.uuid)}>
+                        Open
+                      </Button>
+                    ) : null}
+                  </Space>
+                </List.Item>
+              );
+            }}
+          />
+        </section>
+      ) : null}
 
       <section className="messenger-profile-section">
         <div className="messenger-profile-section-header">
