@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.auth import router as auth_router
+from app.api.customer_segments import router as customer_segments_router
 from app.api.customers import router as customers_router
 from app.api.customer_tags import router as customer_tags_router
 from app.api.conversations import router as conversations_router
@@ -16,6 +17,7 @@ api_router.include_router(system_router, prefix="/system")
 api_router.include_router(auth_router)
 api_router.include_router(facebook_router)
 api_router.include_router(customer_tags_router)
+api_router.include_router(customer_segments_router)
 api_router.include_router(customers_router)
 api_router.include_router(webhook_router)
 api_router.include_router(conversations_router)

@@ -16,6 +16,16 @@ from app.schemas.customers import (
     CustomerTagUpdateRequest,
     CustomerTimelineResponse,
 )
+from app.schemas.customer_segments import (
+    CustomerSegmentCustomersResponse,
+    CustomerSegmentDeleteResponse,
+    CustomerSegmentListResponse,
+    CustomerSegmentPreviewResponse,
+    CustomerSegmentResponse,
+    CustomerSegmentRuleRequest,
+    CustomerSegmentRuleResponse,
+    CustomerSegmentUpsertRequest,
+)
 from app.schemas.auth import LoginRequest, RefreshRequest, RoleResponse, TokenResponse, UserResponse
 from app.schemas.facebook import (
     CurrentFacebookPageResponse,
@@ -26,6 +36,14 @@ from app.schemas.facebook import (
 
 __all__ = [
     "CurrentFacebookPageResponse",
+    "CustomerSegmentCustomersResponse",
+    "CustomerSegmentDeleteResponse",
+    "CustomerSegmentListResponse",
+    "CustomerSegmentPreviewResponse",
+    "CustomerSegmentResponse",
+    "CustomerSegmentRuleRequest",
+    "CustomerSegmentRuleResponse",
+    "CustomerSegmentUpsertRequest",
     "CustomerNoteCreateRequest",
     "CustomerNoteDeleteResponse",
     "CustomerNoteResponse",

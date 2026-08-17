@@ -1,4 +1,10 @@
-import { DashboardOutlined, FacebookOutlined, MessageOutlined, SettingOutlined } from "@ant-design/icons";
+import {
+  DashboardOutlined,
+  FacebookOutlined,
+  FilterOutlined,
+  MessageOutlined,
+  SettingOutlined
+} from "@ant-design/icons";
 import { Layout, Menu } from "antd";
 import { useLocation, useNavigate } from "react-router-dom";
 
@@ -11,6 +17,7 @@ export function AppSidebar() {
       <div className="sidebar-brand">MetaCRM</div>
       <Menu
         mode="inline"
+        defaultOpenKeys={["settings"]}
         selectedKeys={[location.pathname]}
         onClick={({ key }) => navigate(key)}
         items={[
@@ -33,6 +40,11 @@ export function AppSidebar() {
                 key: "/settings/facebook",
                 icon: <FacebookOutlined />,
                 label: "Facebook"
+              },
+              {
+                key: "/settings/segments",
+                icon: <FilterOutlined />,
+                label: "Customer Segments"
               }
             ]
           }

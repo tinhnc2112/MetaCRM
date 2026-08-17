@@ -2,7 +2,14 @@
 
 from app.db.base import Base
 from app.models.base import AuditMixin, BaseModel, SoftDeleteMixin, UTCDateTimeMixin, UUIDMixin
-from app.models.customers import CustomerNote, CustomerTag, CustomerTagAssignment, CustomerTagEvent
+from app.models.customers import (
+    CustomerNote,
+    CustomerSegment,
+    CustomerSegmentRule,
+    CustomerTag,
+    CustomerTagAssignment,
+    CustomerTagEvent,
+)
 from app.models.auth import Role, User, user_roles
 from app.models.facebook import FacebookAccount, FacebookOAuthState, FacebookPage, UserPageContext
 from app.models.messenger import Conversation, Message
@@ -13,6 +20,8 @@ __all__ = [
     "BaseModel",
     "Conversation",
     "CustomerNote",
+    "CustomerSegment",
+    "CustomerSegmentRule",
     "CustomerTag",
     "CustomerTagAssignment",
     "CustomerTagEvent",

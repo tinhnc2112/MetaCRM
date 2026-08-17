@@ -125,6 +125,142 @@ body {
   object-fit: cover;
 }
 
+.customer-segments-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.customer-segments-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.customer-segments-header h2 {
+  margin-bottom: 4px;
+}
+
+.customer-segments-section {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.customer-segments-loading {
+  min-height: 240px;
+  display: grid;
+  place-items: center;
+}
+
+.customer-segment-item {
+  padding-inline: 0 !important;
+  margin-bottom: 12px;
+}
+
+.customer-segment-card {
+  width: 100%;
+  padding: 16px 18px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.customer-segment-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.customer-segment-card-title {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.customer-segment-card-title h4 {
+  margin: 0;
+}
+
+.customer-segment-description {
+  margin-bottom: 0 !important;
+}
+
+.customer-segment-rule-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.customer-segment-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.customer-segment-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 16px;
+}
+
+.customer-segment-editor-panel {
+  min-height: 520px;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.customer-segment-rule-editor-header,
+.customer-segment-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.customer-segment-rule-editor-header h5,
+.customer-segment-preview-header h5 {
+  margin: 0;
+}
+
+.customer-segment-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.customer-segment-rule-row {
+  display: grid;
+  grid-template-columns: 180px 160px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+
+.customer-segment-preview-panel {
+  background: #ffffff;
+}
+
+.customer-segment-preview-item {
+  padding-inline: 0 !important;
+}
+
+.customer-segment-editor-actions {
+  margin-top: auto;
+  justify-content: flex-end;
+}
+
 .messenger-inbox-page {
   min-height: calc(100vh - 112px);
   display: flex;
