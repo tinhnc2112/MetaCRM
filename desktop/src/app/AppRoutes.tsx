@@ -4,6 +4,7 @@ import { AppLayout } from "../layouts/AppLayout";
 import { DashboardPage } from "../pages/DashboardPage";
 import { FacebookSettingsPage } from "../pages/FacebookSettingsPage";
 import { CustomerSegmentsPage } from "../pages/CustomerSegmentsPage";
+import { CustomerDuplicatesPage } from "../pages/CustomerDuplicatesPage";
 import { MessengerInboxPage } from "../pages/MessengerInboxPage";
 import { LoginPage } from "../pages/LoginPage";
 
@@ -16,6 +17,7 @@ export function AppRoutes() {
         <Route path="/messenger" element={<MessengerInboxPage />} />
         <Route path="/settings/facebook" element={<FacebookSettingsPage />} />
         <Route path="/settings/segments" element={<CustomerSegmentsPage />} />
+        <Route path="/settings/duplicates" element={<CustomerDuplicatesPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>

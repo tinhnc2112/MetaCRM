@@ -46,6 +46,10 @@ class Conversation(Base):
     customer_avatar_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    merged_into_conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("facebook_conversations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    merged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now

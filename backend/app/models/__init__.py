@@ -4,6 +4,7 @@ from app.db.base import Base
 from app.models.base import AuditMixin, BaseModel, SoftDeleteMixin, UTCDateTimeMixin, UUIDMixin
 from app.models.customers import (
     CustomerNote,
+    CustomerMerge,
     CustomerSegment,
     CustomerSegmentRule,
     CustomerTag,
@@ -20,6 +21,7 @@ __all__ = [
     "BaseModel",
     "Conversation",
     "CustomerNote",
+    "CustomerMerge",
     "CustomerSegment",
     "CustomerSegmentRule",
     "CustomerTag",

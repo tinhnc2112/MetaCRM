@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from app.db.base import Base
 from app.models.base import utc_now
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
@@ -152,3 +152,41 @@ class CustomerSegmentRule(Base):
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     segment: Mapped["CustomerSegment"] = relationship(back_populates="rules")
+
+
+class CustomerMerge(Base):
+    __tablename__ = "customer_merges"
+    __table_args__ = (
+        UniqueConstraint("primary_conversation_id", "secondary_conversation_id", name="uq_customer_merges_pair"),
+        Index("ix_customer_merges_facebook_page_id", "facebook_page_id"),
+        Index("ix_customer_merges_primary_conversation_id", "primary_conversation_id"),
+        Index("ix_customer_merges_secondary_conversation_id", "secondary_conversation_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    facebook_page_id: Mapped[int] = mapped_column(
+        ForeignKey("facebook_pages.id", ondelete="CASCADE"), nullable=False
+    )
+    primary_conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("facebook_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    secondary_conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("facebook_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    merged_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    duplicate_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    duplicate_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    matching_fields: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    matching_signals: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    page: Mapped["FacebookPage"] = relationship()
+    primary_conversation: Mapped["Conversation"] = relationship(
+        foreign_keys=[primary_conversation_id]
+    )
+    secondary_conversation: Mapped["Conversation"] = relationship(
+        foreign_keys=[secondary_conversation_id]
+    )
+    merged_by: Mapped["User"] = relationship(foreign_keys=[merged_by_user_id])

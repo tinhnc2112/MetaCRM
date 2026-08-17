@@ -18,20 +18,51 @@ from app.schemas.customers import (
     CustomerProfileResponse,
     CustomerTimelineResponse,
 )
+from app.schemas.customer_duplicates import (
+    CustomerDuplicateCandidateResponse,
+    CustomerDuplicateListResponse,
+    CustomerMergeRequest,
+    CustomerMergeResponse,
+)
 from app.services.facebook.customers import (
     create_customer_note,
     delete_customer_note,
     get_customer_profile,
     update_customer_note,
 )
+from app.services.facebook.customer_duplicates import list_customer_duplicates, merge_customers
 from app.services.facebook.customer_tags import (
     assign_customer_tag_to_conversation,
     remove_customer_tag_from_conversation,
 )
-from fastapi import APIRouter, Depends, HTTPException, status
+from app.services.facebook.conversations import unread_count_for_conversation
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from app.schemas.messenger import PaginationMeta
 
 router = APIRouter(prefix="/facebook/customers", tags=["customers"])
+
+
+def _serialize_conversation(conversation, session: Session) -> CustomerProfileConversationResponse:
+    return CustomerProfileConversationResponse(
+        uuid=str(conversation.uuid),
+        customer_psid=conversation.psid,
+        customer_name=conversation.customer_name,
+        customer_avatar_url=conversation.customer_avatar_url,
+        last_message_at=conversation.last_message_at,
+        unread_count=unread_count_for_conversation(session, conversation),
+    )
+
+
+def _serialize_duplicate_candidate(candidate, session: Session) -> CustomerDuplicateCandidateResponse:
+    return CustomerDuplicateCandidateResponse(
+        primary_customer=_serialize_conversation(candidate.primary_customer, session),
+        duplicate_customer=_serialize_conversation(candidate.duplicate_customer, session),
+        confidence=candidate.confidence,
+        reason=candidate.reason,
+        matching_fields=candidate.matching_fields,
+        matching_signals=candidate.matching_signals,
+    )
 
 
 def _serialize_profile(profile) -> CustomerProfileResponse:
@@ -75,6 +106,56 @@ def _serialize_profile(profile) -> CustomerProfileResponse:
             )
             for note in profile.notes
         ],
+    )
+
+
+@router.get("/duplicates", response_model=CustomerDuplicateListResponse)
+def list_customer_duplicates_endpoint(
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> CustomerDuplicateListResponse:
+    result = list_customer_duplicates(session, current_user, page=page, page_size=page_size)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Facebook page is not selected")
+    return CustomerDuplicateListResponse(
+        items=[_serialize_duplicate_candidate(candidate, session) for candidate in result.items],
+        meta=PaginationMeta(
+            total=result.total,
+            page=result.page,
+            page_size=result.page_size,
+            has_next=result.has_next,
+            has_prev=result.has_prev,
+        ),
+    )
+
+
+@router.post("/{primary_customer_id}/merge", response_model=CustomerMergeResponse)
+def merge_customer_endpoint(
+    primary_customer_id: str,
+    payload: CustomerMergeRequest,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> CustomerMergeResponse:
+    try:
+        result = merge_customers(session, current_user, primary_customer_id, payload.secondary_customer_id)
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = status.HTTP_409_CONFLICT if "already" in detail else status.HTTP_422_UNPROCESSABLE_ENTITY
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+    return CustomerMergeResponse(
+        merge_id=result.merge.id,
+        primary_customer=_serialize_conversation(result.primary_customer, session),
+        secondary_customer=_serialize_conversation(result.secondary_customer, session),
+        merged_by_user_id=result.merge.merged_by_user_id,
+        merged_at=result.merge.created_at,
+        duplicate_confidence=result.merge.duplicate_confidence,
+        duplicate_reason=result.merge.duplicate_reason,
+        matching_fields=result.merge.matching_fields,
+        matching_signals=result.merge.matching_signals,
     )
 
 

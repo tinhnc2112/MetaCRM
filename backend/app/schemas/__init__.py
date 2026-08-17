@@ -16,6 +16,12 @@ from app.schemas.customers import (
     CustomerTagUpdateRequest,
     CustomerTimelineResponse,
 )
+from app.schemas.customer_duplicates import (
+    CustomerDuplicateCandidateResponse,
+    CustomerDuplicateListResponse,
+    CustomerMergeRequest,
+    CustomerMergeResponse,
+)
 from app.schemas.customer_segments import (
     CustomerSegmentCustomersResponse,
     CustomerSegmentDeleteResponse,
@@ -47,6 +53,10 @@ __all__ = [
     "CustomerNoteCreateRequest",
     "CustomerNoteDeleteResponse",
     "CustomerNoteResponse",
+    "CustomerDuplicateCandidateResponse",
+    "CustomerDuplicateListResponse",
+    "CustomerMergeRequest",
+    "CustomerMergeResponse",
     "CustomerTagAssignmentResponse",
     "CustomerTagCreateRequest",
     "CustomerTagCustomersResponse",

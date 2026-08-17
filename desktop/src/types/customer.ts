@@ -45,6 +45,36 @@ export type CustomerProfileResponse = {
   notes: CustomerNote[];
 };
 
+export type CustomerDuplicateCandidate = {
+  primary_customer: CustomerProfileConversation;
+  duplicate_customer: CustomerProfileConversation;
+  confidence: number;
+  reason: string;
+  matching_fields: string[];
+  matching_signals: string[];
+};
+
+export type CustomerDuplicateListResponse = {
+  items: CustomerDuplicateCandidate[];
+  meta: PaginationMeta;
+};
+
+export type CustomerMergeRequest = {
+  secondary_customer_id: string;
+};
+
+export type CustomerMergeResponse = {
+  merge_id: number;
+  primary_customer: CustomerProfileConversation;
+  secondary_customer: CustomerProfileConversation;
+  merged_by_user_id: number | null;
+  merged_at: string;
+  duplicate_confidence: number;
+  duplicate_reason: string;
+  matching_fields: string[];
+  matching_signals: string[];
+};
+
 export type CustomerTagAssignmentResponse = {
   customer_id: string;
   tag: CustomerTagSummary;

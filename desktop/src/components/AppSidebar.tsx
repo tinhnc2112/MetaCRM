@@ -3,7 +3,8 @@ import {
   FacebookOutlined,
   FilterOutlined,
   MessageOutlined,
-  SettingOutlined
+  SettingOutlined,
+  UserSwitchOutlined
 } from "@ant-design/icons";
 import { Layout, Menu } from "antd";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -45,6 +46,11 @@ export function AppSidebar() {
                 key: "/settings/segments",
                 icon: <FilterOutlined />,
                 label: "Customer Segments"
+              },
+              {
+                key: "/settings/duplicates",
+                icon: <UserSwitchOutlined />,
+                label: "Customer Duplicates"
               }
             ]
           }
