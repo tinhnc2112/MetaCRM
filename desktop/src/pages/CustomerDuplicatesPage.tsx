@@ -80,6 +80,7 @@ export function CustomerDuplicatesPage() {
     }) => mergeCustomers(primaryCustomerId, { secondary_customer_id: secondaryCustomerId }),
     onSuccess: async () => {
       await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["customer-list", currentPageId] }),
         queryClient.invalidateQueries({ queryKey: ["customer-duplicates", currentPageId] }),
         queryClient.invalidateQueries({ queryKey: ["messenger-conversations", currentPageId] }),
         queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, selection?.primaryCustomerId] }),
@@ -107,8 +108,12 @@ export function CustomerDuplicatesPage() {
     if (!selection) {
       return null;
     }
-    const primary = primaryProfileQuery.data?.conversation.customer_name ?? primaryProfileQuery.data?.conversation.customer_psid;
+    const primary =
+      primaryProfileQuery.data?.customer?.name ??
+      primaryProfileQuery.data?.conversation.customer_name ??
+      primaryProfileQuery.data?.conversation.customer_psid;
     const secondary =
+      secondaryProfileQuery.data?.customer?.name ??
       secondaryProfileQuery.data?.conversation.customer_name ??
       secondaryProfileQuery.data?.conversation.customer_psid;
     return {
@@ -170,13 +175,38 @@ export function CustomerDuplicatesPage() {
                 >
                   <div className="customer-duplicate-item-body">
                     <div className="customer-duplicate-item-header">
-                      <div>
-                        <Typography.Title level={5}>
-                          {candidate.primary_customer.customer_name ?? candidate.primary_customer.customer_psid}
-                        </Typography.Title>
-                        <Typography.Text type="secondary">
-                          {candidate.duplicate_customer.customer_name ?? candidate.duplicate_customer.customer_psid}
-                        </Typography.Text>
+                      <div className="customer-duplicate-item-people">
+                        <div className="customer-duplicate-item-person">
+                          {candidate.primary_customer.customer_avatar_url ? (
+                            <Avatar size={32} src={candidate.primary_customer.customer_avatar_url} />
+                          ) : (
+                            <Avatar size={32}>{getDuplicateInitial(candidate.primary_customer)}</Avatar>
+                          )}
+                          <div className="customer-duplicate-item-person-text">
+                            <Typography.Text strong>
+                              {candidate.primary_customer.customer_name ?? candidate.primary_customer.customer_psid}
+                            </Typography.Text>
+                            <Typography.Text type="secondary">
+                              {formatTimestamp(candidate.primary_customer.last_message_at)}
+                            </Typography.Text>
+                          </div>
+                        </div>
+                        <SwapOutlined className="customer-duplicate-item-vs" />
+                        <div className="customer-duplicate-item-person">
+                          {candidate.duplicate_customer.customer_avatar_url ? (
+                            <Avatar size={32} src={candidate.duplicate_customer.customer_avatar_url} />
+                          ) : (
+                            <Avatar size={32}>{getDuplicateInitial(candidate.duplicate_customer)}</Avatar>
+                          )}
+                          <div className="customer-duplicate-item-person-text">
+                            <Typography.Text strong>
+                              {candidate.duplicate_customer.customer_name ?? candidate.duplicate_customer.customer_psid}
+                            </Typography.Text>
+                            <Typography.Text type="secondary">
+                              {formatTimestamp(candidate.duplicate_customer.last_message_at)}
+                            </Typography.Text>
+                          </div>
+                        </div>
                       </div>
                       <Tag color={confidenceColor(candidate.confidence)}>{Math.round(candidate.confidence * 100)}%</Tag>
                     </div>
@@ -281,6 +311,19 @@ export function CustomerDuplicatesPage() {
               <Typography.Title level={5}>{selectedTitle?.secondary ?? "Unknown customer"}</Typography.Title>
             </div>
           </div>
+          <div className="customer-merge-preview">
+            <Typography.Text type="secondary">After merge, the primary customer keeps:</Typography.Text>
+            <div className="customer-merge-preview-list">
+              <Tag color="blue">Timeline</Tag>
+              <Tag color="blue">Notes</Tag>
+              <Tag color="blue">Tags</Tag>
+              <Tag color="blue">Conversations</Tag>
+              <Tag color="blue">Messages</Tag>
+            </div>
+            <Typography.Text type="secondary">
+              The secondary customer will no longer appear as an independent profile.
+            </Typography.Text>
+          </div>
         </Space>
       </Modal>
     </div>
@@ -327,8 +370,14 @@ function CustomerDuplicateProfileCard({
   }
 
   const conversation = profile.conversation;
-  const displayName = conversation.customer_name ?? conversation.customer_psid;
+  const customer = profile.customer;
+  const displayName = customer?.name ?? conversation.customer_name ?? conversation.customer_psid;
   const initial = displayName.slice(0, 1).toUpperCase();
+  const customerPhone = customer?.phone ?? null;
+  const customerEmail = customer?.email ?? null;
+  const customerConversationCount = customer?.conversation_count ?? profile.conversations.length;
+  const latestActivity = customer?.last_message_at ?? conversation.last_message_at;
+  const notesCount = profile.notes.length;
 
   return (
     <Card className="customer-duplicate-profile-card" title={<Tag color={accent}>{title}</Tag>}>
@@ -346,16 +395,28 @@ function CustomerDuplicateProfileCard({
 
       <div className="customer-duplicate-meta">
         <div>
-          <span className="customer-duplicate-label">Last interaction</span>
-          <Typography.Text>{formatTimestamp(conversation.last_message_at)}</Typography.Text>
+          <span className="customer-duplicate-label">Phone</span>
+          <Typography.Text copyable={customerPhone ? { text: customerPhone } : undefined} className="customer-duplicate-value">
+            {customerPhone ?? "Unavailable"}
+          </Typography.Text>
         </div>
         <div>
-          <span className="customer-duplicate-label">Messages</span>
-          <Typography.Text>{profile.timeline.filter((item) => item.type === "message").length}</Typography.Text>
+          <span className="customer-duplicate-label">Email</span>
+          <Typography.Text copyable={customerEmail ? { text: customerEmail } : undefined} className="customer-duplicate-value">
+            {customerEmail ?? "Unavailable"}
+          </Typography.Text>
+        </div>
+        <div>
+          <span className="customer-duplicate-label">Conversations</span>
+          <Typography.Text>{customerConversationCount}</Typography.Text>
         </div>
         <div>
           <span className="customer-duplicate-label">Notes</span>
-          <Typography.Text>{profile.notes.length}</Typography.Text>
+          <Typography.Text>{notesCount}</Typography.Text>
+        </div>
+        <div>
+          <span className="customer-duplicate-label">Latest activity</span>
+          <Typography.Text>{formatTimestamp(latestActivity)}</Typography.Text>
         </div>
       </div>
 
@@ -467,4 +528,9 @@ function formatTimestamp(value: string | null): string {
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function getDuplicateInitial(conversation: CustomerProfileResponse["conversation"]): string {
+  const value = conversation.customer_name ?? conversation.customer_psid;
+  return value.slice(0, 1).toUpperCase();
 }
