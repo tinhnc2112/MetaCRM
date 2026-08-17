@@ -31,6 +31,15 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC)
 
 
+def _resolve_root_customer(session: Session, customer_id: int) -> Customer | None:
+    current = session.get(Customer, customer_id)
+    seen: set[int] = set()
+    while current is not None and current.merged_into_customer_id is not None and current.id not in seen:
+        seen.add(current.id)
+        current = session.get(Customer, current.merged_into_customer_id)
+    return current
+
+
 def get_or_create_customer_identity(
     session: Session,
     *,
@@ -107,7 +116,46 @@ def resolve_customer_for_conversation(session: Session, conversation) -> int:
     returned unchanged (no extra queries).
     """
     if conversation.customer_id is not None:
-        return conversation.customer_id
+        root_customer = _resolve_root_customer(session, conversation.customer_id)
+        if root_customer is not None and root_customer.id != conversation.customer_id:
+            conversation.customer_id = root_customer.id
+            session.add(conversation)
+            session.flush()
+        customer_id = conversation.customer_id
+        identity = (
+            session.query(CustomerIdentity)
+            .filter(
+                CustomerIdentity.channel == CHANNEL_FACEBOOK,
+                CustomerIdentity.external_id == conversation.psid,
+            )
+            .first()
+        )
+        if identity is not None:
+            updated = False
+            if identity.customer_id != customer_id:
+                identity.customer_id = customer_id
+                updated = True
+            if conversation.customer_name and not identity.display_name:
+                identity.display_name = conversation.customer_name
+                updated = True
+            if conversation.customer_avatar_url and not identity.avatar_url:
+                identity.avatar_url = conversation.customer_avatar_url
+                updated = True
+            if updated:
+                session.add(identity)
+                session.flush()
+            return customer_id
+
+        identity = CustomerIdentity(
+            customer_id=customer_id,
+            channel=CHANNEL_FACEBOOK,
+            external_id=conversation.psid,
+            display_name=conversation.customer_name,
+            avatar_url=conversation.customer_avatar_url,
+        )
+        session.add(identity)
+        session.flush()
+        return customer_id
 
     identity = get_or_create_customer_identity(
         session,

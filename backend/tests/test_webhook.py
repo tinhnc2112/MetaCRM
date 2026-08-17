@@ -367,6 +367,66 @@ def test_upsert_conversation_links_legacy_conversation_without_customer(session:
     assert session.query(CustomerIdentity).count() == 1
 
 
+def test_upsert_conversation_restores_missing_identity_for_linked_customer(session: Session) -> None:
+    page = session.query(FacebookPage).filter(FacebookPage.page_id == "page-111").one()
+    customer = Customer(name="Linked Customer")
+    session.add(customer)
+    session.commit()
+    session.refresh(customer)
+
+    conversation = Conversation(
+        facebook_page_id=page.id,
+        page_id=page.page_id,
+        psid="psid-linked",
+        customer_id=customer.id,
+    )
+    session.add(conversation)
+    session.commit()
+    session.refresh(conversation)
+
+    assert session.query(CustomerIdentity).count() == 0
+
+    resolved = upsert_conversation(session, page, "psid-linked", datetime(2026, 8, 17, tzinfo=UTC))
+    session.commit()
+    session.refresh(resolved)
+
+    assert resolved.id == conversation.id
+    assert resolved.customer_id == customer.id
+    identity = session.query(CustomerIdentity).filter(CustomerIdentity.external_id == "psid-linked").one()
+    assert identity.customer_id == customer.id
+    assert session.query(Customer).count() == 1
+
+
+def test_upsert_conversation_repoints_merged_customer_to_primary(session: Session) -> None:
+    page = session.query(FacebookPage).filter(FacebookPage.page_id == "page-111").one()
+    primary = Customer(name="Primary")
+    secondary = Customer(name="Secondary", merged_into=primary)
+    session.add_all([primary, secondary])
+    session.commit()
+    session.refresh(primary)
+    session.refresh(secondary)
+
+    conversation = Conversation(
+        facebook_page_id=page.id,
+        page_id=page.page_id,
+        psid="psid-merged-secondary",
+        customer_id=secondary.id,
+    )
+    session.add(conversation)
+    session.commit()
+    session.refresh(conversation)
+
+    resolved = upsert_conversation(session, page, "psid-merged-secondary", datetime(2026, 8, 17, tzinfo=UTC))
+    session.commit()
+    session.refresh(resolved)
+
+    assert resolved.id == conversation.id
+    assert resolved.customer_id == primary.id
+    identity = session.query(CustomerIdentity).filter(CustomerIdentity.external_id == "psid-merged-secondary").one()
+    assert identity.customer_id == primary.id
+    assert session.query(Customer).count() == 2
+
+
 def test_upsert_conversation_updates_last_message_at(session: Session) -> None:
     page = session.query(FacebookPage).filter(FacebookPage.page_id == "page-111").one()
     t1 = datetime(2026, 1, 1, tzinfo=UTC)
