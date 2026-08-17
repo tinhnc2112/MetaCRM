@@ -15,6 +15,7 @@ from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
 from app.models.auth import User
+from app.models.customer_core import Customer, CustomerIdentity
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation, Message
 from app.services.facebook.crypto import TokenCipher
@@ -334,6 +335,36 @@ def test_upsert_conversation_is_idempotent(session: Session) -> None:
     conv2 = upsert_conversation(session, page, "psid-dup", None)
     session.commit()
     assert conv1.id == conv2.id
+
+
+def test_upsert_conversation_links_legacy_conversation_without_customer(session: Session) -> None:
+    page = session.query(FacebookPage).filter(FacebookPage.page_id == "page-111").one()
+    legacy = Conversation(
+        facebook_page_id=page.id,
+        page_id=page.page_id,
+        psid="psid-legacy",
+    )
+    session.add(legacy)
+    session.commit()
+    session.refresh(legacy)
+    assert legacy.customer_id is None
+
+    resolved = upsert_conversation(session, page, "psid-legacy", datetime(2026, 8, 17, tzinfo=UTC))
+    session.commit()
+    session.refresh(resolved)
+
+    assert resolved.id == legacy.id
+    assert resolved.customer_id is not None
+    assert session.query(Customer).count() == 1
+    assert session.query(CustomerIdentity).count() == 1
+
+    resolved_again = upsert_conversation(session, page, "psid-legacy", datetime(2026, 8, 17, 1, tzinfo=UTC))
+    session.commit()
+    session.refresh(resolved_again)
+
+    assert resolved_again.id == legacy.id
+    assert session.query(Customer).count() == 1
+    assert session.query(CustomerIdentity).count() == 1
 
 
 def test_upsert_conversation_updates_last_message_at(session: Session) -> None:

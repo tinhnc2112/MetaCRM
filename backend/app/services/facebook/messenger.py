@@ -258,9 +258,17 @@ def upsert_conversation(
         )
         session.add(conversation)
         session.flush()  # obtain PK before creating Message FK
-        # M19.6: every newly-created Conversation is immediately linked to a
-        # channel-independent Customer (creating one if this PSID is new).
-        resolve_customer_for_conversation(session, conversation)
+
+    # M19.6: every Conversation must be linked to a channel-independent
+    # Customer — both a brand-new Conversation created above AND a
+    # pre-existing legacy row (created before M19.6) whose customer_id is
+    # still NULL. resolve_customer_for_conversation() is idempotent: it
+    # returns immediately with no extra query/write when customer_id is
+    # already set, so calling it unconditionally here is a no-op for the
+    # common case (existing conversation already linked, e.g. after a
+    # Customer merge re-pointed it to the primary customer) and only does
+    # real work for the new/legacy-NULL cases.
+    resolve_customer_for_conversation(session, conversation)
 
     # Update last_message_at if this event is more recent.
     # Normalise both sides to UTC-aware before comparing to avoid TypeError
