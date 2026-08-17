@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import UUID
 
 from app.db.session import get_db_session
 from app.dependencies.auth import require_active_user
+from app.models.customer_core import Customer
 from app.models.auth import User
 from app.schemas.customers import (
     CustomerNoteCreateRequest,
     CustomerNoteDeleteResponse,
+    CustomerListItemResponse,
+    CustomerListResponse,
     CustomerNoteResponse,
     CustomerTagAssignmentResponse,
     CustomerTagSummaryResponse,
     CustomerNoteUpdateRequest,
     CustomerProfileConversationResponse,
     CustomerProfileResponse,
+    CustomerSummaryResponse,
     CustomerTimelineResponse,
 )
 from app.schemas.customer_duplicates import (
@@ -27,10 +32,14 @@ from app.schemas.customer_duplicates import (
 from app.services.facebook.customers import (
     create_customer_note,
     delete_customer_note,
+    get_customer_profile_by_uuid,
     get_customer_profile,
+    list_customers,
     update_customer_note,
 )
 from app.services.facebook.customer_duplicates import list_customer_duplicates, merge_customers
+from app.services.facebook.customer_tags import list_tags_for_customer
+from app.services.facebook.pages import get_current_page
 from app.services.facebook.customer_tags import (
     assign_customer_tag_to_conversation,
     remove_customer_tag_from_conversation,
@@ -66,7 +75,18 @@ def _serialize_duplicate_candidate(candidate, session: Session) -> CustomerDupli
 
 
 def _serialize_profile(profile) -> CustomerProfileResponse:
+    customer_summary = CustomerSummaryResponse(
+        uuid=str(profile.customer.public_id),
+        name=profile.customer.name,
+        phone=profile.customer.phone,
+        email=profile.customer.email,
+        avatar_url=profile.conversation.customer_avatar_url,
+        last_message_at=profile.conversation.last_message_at,
+        conversation_count=len(profile.conversations),
+        unread_count=profile.unread_count,
+    )
     return CustomerProfileResponse(
+        customer=customer_summary,
         conversation=CustomerProfileConversationResponse(
             uuid=str(profile.conversation.uuid),
             customer_psid=profile.conversation.psid,
@@ -75,6 +95,17 @@ def _serialize_profile(profile) -> CustomerProfileResponse:
             last_message_at=profile.conversation.last_message_at,
             unread_count=profile.unread_count,
         ),
+        conversations=[
+            CustomerProfileConversationResponse(
+                uuid=str(conversation.uuid),
+                customer_psid=conversation.psid,
+                customer_name=conversation.customer_name,
+                customer_avatar_url=conversation.customer_avatar_url,
+                last_message_at=conversation.last_message_at,
+                unread_count=0,
+            )
+            for conversation in profile.conversations
+        ],
         tags=[
             CustomerTagSummaryResponse(
                 id=tag.id,
@@ -106,6 +137,61 @@ def _serialize_profile(profile) -> CustomerProfileResponse:
             )
             for note in profile.notes
         ],
+    )
+
+
+def _serialize_customer_list_item(
+    item,
+    session: Session,
+    facebook_page_id: int,
+) -> CustomerListItemResponse:
+    tags = list_tags_for_customer(session, item.customer.id, facebook_page_id)
+    return CustomerListItemResponse(
+        uuid=str(item.customer.public_id),
+        name=item.customer.name,
+        phone=item.customer.phone,
+        email=item.customer.email,
+        avatar_url=item.avatar_url,
+        last_message_at=item.last_message_at,
+        conversation_count=item.conversation_count,
+        unread_count=item.unread_count,
+        tags=[
+            CustomerTagSummaryResponse(
+                id=tag.id,
+                name=tag.name,
+                slug=tag.slug,
+                description=tag.description,
+            )
+            for tag in tags
+        ],
+    )
+
+
+@router.get("", response_model=CustomerListResponse)
+def list_customers_endpoint(
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    q: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> CustomerListResponse:
+    current_page = get_current_page(session, current_user)
+    if current_page is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Facebook page is not selected")
+
+    result = list_customers(session, current_user, page=page, page_size=page_size, query=q)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Facebook page is not selected")
+
+    return CustomerListResponse(
+        items=[_serialize_customer_list_item(item, session, current_page.id) for item in result.items],
+        meta=PaginationMeta(
+            total=result.total,
+            page=result.page,
+            page_size=result.page_size,
+            has_next=result.has_next,
+            has_prev=result.has_prev,
+        ),
     )
 
 
@@ -168,13 +254,25 @@ def _serialize_note(note) -> CustomerNoteResponse:
     )
 
 
-@router.get("/{conversation_id}", response_model=CustomerProfileResponse)
+@router.get("/{customer_id}", response_model=CustomerProfileResponse)
 def customer_profile_endpoint(
-    conversation_id: str,
+    customer_id: str,
     current_user: Annotated[User, Depends(require_active_user)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> CustomerProfileResponse:
-    profile = get_customer_profile(session, current_user, conversation_id)
+    try:
+        customer_uuid = UUID(customer_id)
+    except ValueError:
+        customer_uuid = None
+
+    if customer_uuid is not None:
+        if session.query(Customer.id).filter(Customer.public_id == customer_uuid).first() is not None:
+            profile = get_customer_profile_by_uuid(session, current_user, customer_id)
+            if profile is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+            return _serialize_profile(profile)
+
+    profile = get_customer_profile(session, current_user, customer_id)
     if profile is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return _serialize_profile(profile)

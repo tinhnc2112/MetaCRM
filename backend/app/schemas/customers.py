@@ -20,6 +20,19 @@ class CustomerProfileConversationResponse(BaseModel):
     unread_count: int = 0
 
 
+class CustomerSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    uuid: str
+    name: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    avatar_url: str | None = None
+    last_message_at: datetime | None = None
+    conversation_count: int = 0
+    unread_count: int = 0
+
+
 class CustomerTagSummaryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -39,6 +52,15 @@ class CustomerTagListResponse(BaseModel):
 
 class CustomerTagCustomersResponse(BaseModel):
     items: list[CustomerProfileConversationResponse]
+    meta: PaginationMeta
+
+
+class CustomerListItemResponse(CustomerSummaryResponse):
+    tags: list[CustomerTagSummaryResponse] = Field(default_factory=list)
+
+
+class CustomerListResponse(BaseModel):
+    items: list[CustomerListItemResponse]
     meta: PaginationMeta
 
 
@@ -69,7 +91,9 @@ class CustomerNoteResponse(BaseModel):
 
 
 class CustomerProfileResponse(BaseModel):
+    customer: CustomerSummaryResponse | None = None
     conversation: CustomerProfileConversationResponse
+    conversations: list[CustomerProfileConversationResponse] = Field(default_factory=list)
     tags: list[CustomerTagSummaryResponse]
     timeline: list[CustomerTimelineResponse]
     notes: list[CustomerNoteResponse]
