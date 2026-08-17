@@ -12,6 +12,7 @@ from app.models.auth import User
 from app.models.customers import CustomerTag, CustomerTagAssignment, CustomerTagEvent
 from app.models.facebook import FacebookPage
 from app.models.messenger import Conversation
+from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.conversations import PaginatedResult, get_conversation_for_user
 from app.services.facebook.pages import get_current_page
 from sqlalchemy import func
@@ -76,8 +77,14 @@ def _tag_data(tag: CustomerTag, customer_count: int = 0) -> CustomerTagData:
 def _customer_count_map(session: Session, page: FacebookPage, tag_ids: list[int]) -> dict[int, int]:
     if not tag_ids:
         return {}
+    # Count distinct customers (not assignment rows) so a Customer with
+    # several conversations on this page (e.g. after a M19.5 merge) is only
+    # counted once per tag.
     rows = (
-        session.query(CustomerTagAssignment.tag_id, func.count(CustomerTagAssignment.id))
+        session.query(
+            CustomerTagAssignment.tag_id,
+            func.count(func.distinct(CustomerTagAssignment.customer_id)),
+        )
         .join(Conversation, Conversation.id == CustomerTagAssignment.conversation_id)
         .filter(
             CustomerTagAssignment.tag_id.in_(tag_ids),
@@ -258,23 +265,29 @@ def list_customer_tag_customers(
     return PaginatedResult(items=items, total=total, page=page, page_size=page_size)
 
 
-def list_tags_for_conversation(session: Session, conversation: Conversation) -> list[CustomerTag]:
+def list_tags_for_customer(session: Session, customer_id: int, facebook_page_id: int) -> list[CustomerTag]:
+    """Tags owned by a Customer (M19.4), scoped to one page's tag vocabulary.
+
+    Spans every conversation the Customer has on this page (not just the one
+    currently open), since tag ownership belongs to the Customer.
+    """
     return (
         session.query(CustomerTag)
         .join(CustomerTagAssignment, CustomerTagAssignment.tag_id == CustomerTag.id)
         .filter(
-            CustomerTagAssignment.conversation_id == conversation.id,
-            CustomerTag.facebook_page_id == conversation.facebook_page_id,
+            CustomerTagAssignment.customer_id == customer_id,
+            CustomerTag.facebook_page_id == facebook_page_id,
         )
         .order_by(CustomerTag.name.asc(), CustomerTag.id.asc())
+        .distinct()
         .all()
     )
 
 
-def list_tag_events_for_conversation(session: Session, conversation: Conversation) -> list[CustomerTagEventData]:
+def list_tag_events_for_customer(session: Session, customer_id: int) -> list[CustomerTagEventData]:
     rows = (
         session.query(CustomerTagEvent)
-        .filter(CustomerTagEvent.conversation_id == conversation.id)
+        .filter(CustomerTagEvent.customer_id == customer_id)
         .order_by(CustomerTagEvent.created_at.desc(), CustomerTagEvent.id.desc())
         .all()
     )
@@ -308,18 +321,24 @@ def assign_customer_tag(
     if tag is None:
         return None
 
+    # M19.4: ownership/dedup is by customer_id, so assigning the same tag
+    # from any of the Customer's conversations is idempotent.
+    customer_id = resolve_customer_for_conversation(session, conversation)
     assignment = (
         session.query(CustomerTagAssignment)
         .filter(
-            CustomerTagAssignment.conversation_id == conversation.id,
+            CustomerTagAssignment.customer_id == customer_id,
             CustomerTagAssignment.tag_id == tag.id,
         )
         .first()
     )
     if assignment is None:
-        assignment = CustomerTagAssignment(conversation_id=conversation.id, tag_id=tag.id)
+        assignment = CustomerTagAssignment(
+            conversation_id=conversation.id, customer_id=customer_id, tag_id=tag.id
+        )
         event = CustomerTagEvent(
             conversation_id=conversation.id,
+            customer_id=customer_id,
             tag_id=tag.id,
             user_id=user.id,
             action="added",
@@ -346,10 +365,11 @@ def remove_customer_tag(
     if tag is None:
         return None
 
+    customer_id = resolve_customer_for_conversation(session, conversation)
     assignment = (
         session.query(CustomerTagAssignment)
         .filter(
-            CustomerTagAssignment.conversation_id == conversation.id,
+            CustomerTagAssignment.customer_id == customer_id,
             CustomerTagAssignment.tag_id == tag.id,
         )
         .first()
@@ -357,6 +377,7 @@ def remove_customer_tag(
     if assignment is not None:
         event = CustomerTagEvent(
             conversation_id=conversation.id,
+            customer_id=customer_id,
             tag_id=tag.id,
             user_id=user.id,
             action="removed",

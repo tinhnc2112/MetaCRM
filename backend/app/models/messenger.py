@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from app.db.base import Base
+from app.models.customer_core import Customer  # noqa: F401 - needed for relationship() string resolution
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -42,6 +43,9 @@ class Conversation(Base):
     )
     page_id: Mapped[str] = mapped_column(String(64), nullable=False)
     psid: Mapped[str] = mapped_column(String(64), nullable=False)
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     customer_avatar_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -68,6 +72,7 @@ class Conversation(Base):
     messages: Mapped[list[Message]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan", lazy="selectin"
     )
+    customer: Mapped[Customer | None] = relationship(lazy="joined")
 
 
 class Message(Base):

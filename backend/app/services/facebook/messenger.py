@@ -10,6 +10,7 @@ from typing import Any
 
 from app.models.facebook import FacebookPage
 from app.models.messenger import Conversation, Message
+from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.client import FacebookGraphClient
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.exceptions import FacebookIntegrationError
@@ -257,6 +258,9 @@ def upsert_conversation(
         )
         session.add(conversation)
         session.flush()  # obtain PK before creating Message FK
+        # M19.6: every newly-created Conversation is immediately linked to a
+        # channel-independent Customer (creating one if this PSID is new).
+        resolve_customer_for_conversation(session, conversation)
 
     # Update last_message_at if this event is more recent.
     # Normalise both sides to UTC-aware before comparing to avoid TypeError

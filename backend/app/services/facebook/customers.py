@@ -8,14 +8,17 @@ from typing import Literal
 from uuid import UUID
 
 from app.models.auth import User
-from app.models.customers import CustomerNote, CustomerTag
+from app.models.customer_core import Customer
+from app.models.customers import CustomerMerge, CustomerNote, CustomerTag
 from app.models.messenger import Conversation, Message
-from app.services.facebook.customer_tags import list_tag_events_for_conversation, list_tags_for_conversation
+from app.services.customer_identity import resolve_customer_for_conversation
+from app.services.facebook.customer_tags import list_tag_events_for_customer, list_tags_for_customer
 from app.services.facebook.conversations import (
     get_conversation_for_user,
     get_user_page_ids,
     unread_count_for_conversation,
 )
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 
@@ -93,10 +96,52 @@ def get_customer_profile(session: Session, user: User, conversation_id: str) -> 
     if conversation is None:
         return None
 
+    # M19.4: notes and tags are owned by the channel-independent Customer,
+    # not the conversation the staff member happens to be viewing. Resolving
+    # customer_id here (idempotent) also means the profile aggregates any
+    # notes/tags added from a *different* conversation of the same Customer
+    # (e.g. after a M19.5 merge).
+    #
+    # M19.4 Migration backward-compatibility: In the transition period,
+    # notes may have (customer_id=NULL, conversation_id=XXX) for legacy data
+    # not yet backfilled by migration 0011. Query both paths to avoid losing
+    # notes during the migration window.
+    # M19.5: Check if THIS SPECIFIC conversation was the secondary side of a
+    # completed merge. This must be checked BEFORE resolving customer_id,
+    # because merge_customers() re-points conversation.customer_id from the
+    # secondary Customer to the primary Customer as part of the transfer
+    # (any Conversation whose customer_id equals the secondary Customer's id
+    # -- including the secondary conversation itself -- gets moved onto the
+    # primary Customer). After that transfer, resolve_customer_for_conversation()
+    # on the secondary conversation returns the PRIMARY customer_id, so a
+    # check keyed on customer_id (e.g. Customer.merged_into_customer_id) would
+    # incorrectly inspect the primary Customer's merge status instead of the
+    # secondary's. Checking CustomerMerge.secondary_conversation_id directly
+    # against this conversation's own id is unaffected by that remap.
+    is_merged_away = (
+        session.query(CustomerMerge)
+        .filter(CustomerMerge.secondary_conversation_id == conversation.id)
+        .first()
+    ) is not None
+    if is_merged_away:
+        # This conversation was merged into another customer; profile is
+        # no longer accessible under its own identity.
+        return None
+
+    customer_id = resolve_customer_for_conversation(session, conversation)
+
     notes = (
         session.query(CustomerNote)
         .filter(
-            CustomerNote.conversation_id == conversation.id,
+            or_(
+                # M19.4+ way: owned by customer
+                CustomerNote.customer_id == customer_id,
+                # Legacy path during migration: conversation-scoped note with no customer_id yet
+                and_(
+                    CustomerNote.customer_id.is_(None),
+                    CustomerNote.conversation_id == conversation.id,
+                ),
+            ),
             CustomerNote.deleted_at.is_(None),
         )
         .order_by(
@@ -106,7 +151,7 @@ def get_customer_profile(session: Session, user: User, conversation_id: str) -> 
         )
         .all()
     )
-    tags = list_tags_for_conversation(session, conversation)
+    tags = list_tags_for_customer(session, customer_id, conversation.facebook_page_id)
     tag_events = [
         CustomerTimelineItem(
             type="tag",
@@ -116,11 +161,31 @@ def get_customer_profile(session: Session, user: User, conversation_id: str) -> 
             tag_name=event.tag_name,
             tag_slug=event.tag_slug,
         )
-        for event in list_tag_events_for_conversation(session, conversation)
+        for event in list_tag_events_for_customer(session, customer_id)
     ]
+    
+    # M19.5: After merge, timeline should include messages from ALL conversations
+    # belonging to the customer, not just the currently-viewed conversation.
+    # Query all conversations for this customer, including secondary conversations from merges.
+    # Fallback to current conversation for legacy data without customer_id set.
+    customer_conversation_rows = (
+        session.query(Conversation.id)
+        .filter(
+            Conversation.customer_id == customer_id,
+            Conversation.facebook_page_id == conversation.facebook_page_id,
+            Conversation.deleted_at.is_(None),
+        )
+        .all()
+    )
+    conversation_ids = [row[0] for row in customer_conversation_rows]
+    
+    # If no conversations found with customer_id (legacy case), fall back to current conversation
+    if not conversation_ids:
+        conversation_ids = [conversation.id]
+    
     messages = (
         session.query(Message)
-        .filter(Message.conversation_id == conversation.id)
+        .filter(Message.conversation_id.in_(conversation_ids))
         .order_by(Message.fb_timestamp_ms.desc().nulls_last(), Message.id.desc())
         .all()
     )
@@ -159,7 +224,8 @@ def create_customer_note(session: Session, user: User, conversation_id: str, con
     if conversation is None:
         return None
 
-    note = CustomerNote(conversation_id=conversation.id, user_id=user.id, content=content)
+    customer_id = resolve_customer_for_conversation(session, conversation)
+    note = CustomerNote(conversation_id=conversation.id, customer_id=customer_id, user_id=user.id, content=content)
     session.add(note)
     session.commit()
     session.refresh(note)

@@ -2,6 +2,7 @@
 
 from app.db.base import Base
 from app.models.base import AuditMixin, BaseModel, SoftDeleteMixin, UTCDateTimeMixin, UUIDMixin
+from app.models.customer_core import Customer, CustomerIdentity
 from app.models.customers import (
     CustomerNote,
     CustomerMerge,
@@ -20,6 +21,8 @@ __all__ = [
     "Base",
     "BaseModel",
     "Conversation",
+    "Customer",
+    "CustomerIdentity",
     "CustomerNote",
     "CustomerMerge",
     "CustomerSegment",

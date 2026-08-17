@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from app.db.base import Base
 from app.models.base import utc_now
+from app.models.customer_core import Customer  # noqa: F401 - needed for relationship() string resolution
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,6 +20,13 @@ class CustomerNote(Base):
     conversation_id: Mapped[int] = mapped_column(
         ForeignKey("facebook_conversations.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # M19.4: ownership moved to customer_id (channel-independent). Nullable at
+    # the DB level to tolerate legacy rows whose conversation predates M19
+    # backfill; always set for rows created going forward (see
+    # services/facebook/customers.py::create_customer_note).
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -30,6 +38,7 @@ class CustomerNote(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     conversation: Mapped["Conversation"] = relationship(back_populates="notes")
+    customer: Mapped[Customer | None] = relationship()
     user: Mapped["User"] = relationship()
 
 
@@ -65,7 +74,14 @@ class CustomerTagAssignment(Base):
     __tablename__ = "customer_tag_assignments"
     __table_args__ = (
         UniqueConstraint("conversation_id", "tag_id", name="uq_customer_tag_assignments_conversation_tag"),
+        # M19.4: dedup authority moves to (customer_id, tag_id) so the same
+        # customer cannot hold the same tag twice across multiple
+        # conversations (e.g. after a M19.5 merge). NULLs are still allowed
+        # by MySQL/SQLite unique indexes, so legacy rows without a resolved
+        # customer_id do not block this constraint.
+        UniqueConstraint("customer_id", "tag_id", name="uq_customer_tag_assignments_customer_tag"),
         Index("ix_customer_tag_assignments_conversation_id", "conversation_id"),
+        Index("ix_customer_tag_assignments_customer_id", "customer_id"),
         Index("ix_customer_tag_assignments_tag_id", "tag_id"),
     )
 
@@ -73,10 +89,14 @@ class CustomerTagAssignment(Base):
     conversation_id: Mapped[int] = mapped_column(
         ForeignKey("facebook_conversations.id", ondelete="CASCADE"), nullable=False
     )
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), nullable=True
+    )
     tag_id: Mapped[int] = mapped_column(ForeignKey("customer_tags.id", ondelete="CASCADE"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
     conversation: Mapped["Conversation"] = relationship(back_populates="tag_assignments")
+    customer: Mapped[Customer | None] = relationship()
     tag: Mapped["CustomerTag"] = relationship(back_populates="assignments")
 
 
@@ -84,12 +104,16 @@ class CustomerTagEvent(Base):
     __tablename__ = "customer_tag_events"
     __table_args__ = (
         Index("ix_customer_tag_events_conversation_id", "conversation_id"),
+        Index("ix_customer_tag_events_customer_id", "customer_id"),
         Index("ix_customer_tag_events_tag_id", "tag_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_id: Mapped[int] = mapped_column(
         ForeignKey("facebook_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), nullable=True
     )
     tag_id: Mapped[int | None] = mapped_column(
         ForeignKey("customer_tags.id", ondelete="SET NULL"), nullable=True
@@ -101,6 +125,7 @@ class CustomerTagEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
     conversation: Mapped["Conversation"] = relationship(back_populates="tag_events")
+    customer: Mapped[Customer | None] = relationship()
     tag: Mapped["CustomerTag"] = relationship(back_populates="events")
     user: Mapped["User"] = relationship()
 
@@ -173,6 +198,17 @@ class CustomerMerge(Base):
     secondary_conversation_id: Mapped[int] = mapped_column(
         ForeignKey("facebook_conversations.id", ondelete="CASCADE"), nullable=False
     )
+    # M19.5: the actual Customer-level merge ("Merge Customer, never only
+    # Conversation", docs/03_CUSTOMER.md). primary/secondary_conversation_id
+    # above record which specific conversation pair the staff member picked
+    # in the UI; these columns record the channel-independent Customer
+    # entities that were actually merged as a result.
+    primary_customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    secondary_customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     merged_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -189,4 +225,6 @@ class CustomerMerge(Base):
     secondary_conversation: Mapped["Conversation"] = relationship(
         foreign_keys=[secondary_conversation_id]
     )
+    primary_customer: Mapped[Customer | None] = relationship(foreign_keys=[primary_customer_id])
+    secondary_customer: Mapped[Customer | None] = relationship(foreign_keys=[secondary_customer_id])
     merged_by: Mapped["User"] = relationship(foreign_keys=[merged_by_user_id])
