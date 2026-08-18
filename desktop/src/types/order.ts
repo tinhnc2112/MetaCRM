@@ -35,6 +35,12 @@ export type OrderCreatePayload = {
   note?: string | null;
 };
 
+export type OrderUpdatePayload = {
+  status?: OrderStatus;
+  payment_status?: PaymentStatus;
+  shipping_status?: ShippingStatus;
+};
+
 export type OrderListItem = {
   uuid: string;
   order_number: string;

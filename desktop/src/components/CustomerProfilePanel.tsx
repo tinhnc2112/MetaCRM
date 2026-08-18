@@ -32,19 +32,46 @@ import {
 } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { createOrder, getCustomerOrderSummary, getOrder, listCustomerOrders } from "../services/orderService";
+import { createOrder, getCustomerOrderSummary, getOrder, listCustomerOrders, updateOrder } from "../services/orderService";
 import type {
   CustomerProfileResponse,
   CustomerNoteSaveRequest,
   CustomerTag
 } from "../types/customer";
-import type { CustomerOrderSummary, OrderCreatePayload, OrderListItem, OrderResponse, OrderStatus } from "../types/order";
+import type {
+  CustomerOrderSummary,
+  OrderCreatePayload,
+  OrderListItem,
+  OrderResponse,
+  OrderStatus,
+  OrderUpdatePayload,
+  PaymentStatus,
+  ShippingStatus
+} from "../types/order";
 
 const ORDER_PAGE_SIZE = 5;
 const ORDER_STATUS_OPTIONS: Array<{ label: string; value: "all" | OrderStatus }> = [
   { label: "All", value: "all" },
   { label: "Draft", value: "draft" },
   { label: "Confirmed", value: "confirmed" },
+  { label: "Cancelled", value: "cancelled" }
+];
+const ORDER_LIFECYCLE_STATUS_OPTIONS: Array<{ label: string; value: OrderStatus; disabled?: boolean }> = [
+  { label: "Draft", value: "draft" },
+  { label: "Confirmed", value: "confirmed" },
+  { label: "Cancelled", value: "cancelled", disabled: true }
+];
+const PAYMENT_STATUS_OPTIONS: Array<{ label: string; value: PaymentStatus }> = [
+  { label: "Unpaid", value: "unpaid" },
+  { label: "Partial", value: "partial" },
+  { label: "Paid", value: "paid" },
+  { label: "Refunded", value: "refunded" }
+];
+const SHIPPING_STATUS_OPTIONS: Array<{ label: string; value: ShippingStatus }> = [
+  { label: "Pending", value: "pending" },
+  { label: "Packed", value: "packed" },
+  { label: "Shipped", value: "shipped" },
+  { label: "Delivered", value: "delivered" },
   { label: "Cancelled", value: "cancelled" }
 ];
 
@@ -70,6 +97,21 @@ type CreateOrderMutationInput = {
   pageId: string;
   customerUuid: string;
   contextKey: string;
+};
+
+type OrderUpdateMutationInput = {
+  orderUuid: string;
+  payload: OrderUpdatePayload;
+  pageId: string;
+  customerUuid: string;
+  contextKey: string;
+  successMessage: string;
+};
+
+type OrderLifecycleDraft = {
+  status: OrderStatus;
+  payment_status: PaymentStatus;
+  shipping_status: ShippingStatus;
 };
 
 type CustomerProfilePanelProps = {
@@ -110,7 +152,7 @@ export function CustomerProfilePanel({
   onSelectConversation
 }: CustomerProfilePanelProps) {
   const queryClient = useQueryClient();
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const [noteId, setNoteId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
@@ -120,6 +162,7 @@ export function CustomerProfilePanel({
   const [createOrderOpen, setCreateOrderOpen] = useState(false);
   const [createOrderError, setCreateOrderError] = useState<string | null>(null);
   const [createOrderDraft, setCreateOrderDraft] = useState<CreateOrderDraft>(() => buildEmptyOrderDraft());
+  const [orderUpdateError, setOrderUpdateError] = useState<string | null>(null);
 
   const conversation = profile?.conversation ?? null;
   const customer = profile?.customer ?? null;
@@ -163,7 +206,11 @@ export function CustomerProfilePanel({
   ]);
   const createOrderContextRef = useRef(createOrderContextKey);
   const createOrderSubmitLockRef = useRef(false);
+  const orderUpdateContextKey = JSON.stringify([currentPageId, customerUuid, selectedOrderUuid]);
+  const orderUpdateContextRef = useRef(orderUpdateContextKey);
+  const orderUpdateSubmitLockRef = useRef(false);
   createOrderContextRef.current = createOrderContextKey;
+  orderUpdateContextRef.current = orderUpdateContextKey;
 
   useEffect(() => {
     setOrderPage(1);
@@ -172,6 +219,7 @@ export function CustomerProfilePanel({
     setCreateOrderOpen(false);
     setCreateOrderError(null);
     setCreateOrderDraft(buildEmptyOrderDraft());
+    setOrderUpdateError(null);
   }, [currentPageId, customerUuid, resolvedCreateOrderConversationUuid]);
 
   const ordersQuery = useQuery({
@@ -219,6 +267,27 @@ export function CustomerProfilePanel({
     onError: (error, input) => {
       if (createOrderContextRef.current === input.contextKey) {
         setCreateOrderError(getReadableError(error));
+      }
+    }
+  });
+
+  const orderUpdateMutation = useMutation({
+    mutationFn: ({ orderUuid, payload }: OrderUpdateMutationInput) => updateOrder(orderUuid, payload),
+    onSuccess: async (_, input) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["customer-orders", input.pageId, input.customerUuid] }),
+        queryClient.invalidateQueries({ queryKey: ["customer-order-summary", input.pageId, input.customerUuid] }),
+        queryClient.invalidateQueries({ queryKey: ["order-detail", input.pageId, input.orderUuid] })
+      ]);
+      if (orderUpdateContextRef.current !== input.contextKey) {
+        return;
+      }
+      setOrderUpdateError(null);
+      void message.success(input.successMessage);
+    },
+    onError: (error, input) => {
+      if (orderUpdateContextRef.current === input.contextKey) {
+        setOrderUpdateError(getReadableError(error, "Could not update order. Please try again."));
       }
     }
   });
@@ -294,6 +363,74 @@ export function CustomerProfilePanel({
     } finally {
       createOrderSubmitLockRef.current = false;
     }
+  };
+
+  const buildOrderUpdateInput = (
+    orderUuid: string,
+    payload: OrderUpdatePayload,
+    successMessage: string
+  ): OrderUpdateMutationInput | null => {
+    const loadedOrder = orderDetailQuery.data;
+    if (
+      !currentPageId ||
+      !customerUuid ||
+      !selectedOrderUuid ||
+      selectedOrderUuid !== orderUuid ||
+      loadedOrder?.uuid !== orderUuid ||
+      loadedOrder.customer_uuid !== customerUuid
+    ) {
+      setOrderUpdateError("Order context is no longer available. Reopen the order and try again.");
+      return null;
+    }
+    return {
+      orderUuid,
+      payload,
+      pageId: currentPageId,
+      customerUuid,
+      contextKey: orderUpdateContextKey,
+      successMessage
+    };
+  };
+
+  const executeOrderUpdate = async (input: OrderUpdateMutationInput) => {
+    if (
+      orderUpdateSubmitLockRef.current ||
+      orderUpdateMutation.isPending ||
+      orderUpdateContextRef.current !== input.contextKey
+    ) {
+      return;
+    }
+    setOrderUpdateError(null);
+    orderUpdateSubmitLockRef.current = true;
+    try {
+      await orderUpdateMutation.mutateAsync(input);
+    } catch {
+      // The mutation callback renders a readable error for the active order context.
+    } finally {
+      orderUpdateSubmitLockRef.current = false;
+    }
+  };
+
+  const handleUpdateOrder = async (orderUuid: string, payload: OrderUpdatePayload) => {
+    const input = buildOrderUpdateInput(orderUuid, payload, "Order statuses updated");
+    if (input) {
+      await executeOrderUpdate(input);
+    }
+  };
+
+  const handleCancelOrder = (orderUuid: string, orderNumber: string) => {
+    const input = buildOrderUpdateInput(orderUuid, { status: "cancelled" }, `Cancelled order ${orderNumber}`);
+    if (!input) {
+      return;
+    }
+    modal.confirm({
+      title: "Cancel order?",
+      content: `Cancel ${orderNumber}? This order cannot be reopened. Payment status will not change automatically.`,
+      okText: "Cancel order",
+      okButtonProps: { danger: true },
+      cancelText: "Keep order",
+      onOk: () => executeOrderUpdate(input)
+    });
   };
 
   if (!conversation && loading) {
@@ -495,8 +632,15 @@ export function CustomerProfilePanel({
             orderDetail={orderDetailQuery.data ?? null}
             orderDetailLoading={orderDetailQuery.isLoading}
             orderDetailError={orderDetailQuery.isError}
+            orderUpdateError={orderUpdateError}
+            orderUpdating={orderUpdateMutation.isPending}
             onPageChange={setOrderPage}
-            onSelectOrder={(orderUuid) => setSelectedOrderUuid((current) => (current === orderUuid ? null : orderUuid))}
+            onSelectOrder={(orderUuid) => {
+              setOrderUpdateError(null);
+              setSelectedOrderUuid((current) => (current === orderUuid ? null : orderUuid));
+            }}
+            onUpdateOrder={handleUpdateOrder}
+            onCancelOrder={handleCancelOrder}
             onOpenConversation={onOpenConversation}
           />
         )}
@@ -896,8 +1040,12 @@ function CustomerOrdersList({
   orderDetail,
   orderDetailLoading,
   orderDetailError,
+  orderUpdateError,
+  orderUpdating,
   onPageChange,
   onSelectOrder,
+  onUpdateOrder,
+  onCancelOrder,
   onOpenConversation
 }: {
   orders: OrderListItem[];
@@ -912,8 +1060,12 @@ function CustomerOrdersList({
   orderDetail: OrderResponse | null;
   orderDetailLoading: boolean;
   orderDetailError: boolean;
+  orderUpdateError: string | null;
+  orderUpdating: boolean;
   onPageChange: (page: number) => void;
   onSelectOrder: (orderUuid: string) => void;
+  onUpdateOrder: (orderUuid: string, payload: OrderUpdatePayload) => Promise<void>;
+  onCancelOrder: (orderUuid: string, orderNumber: string) => void;
   onOpenConversation?: (conversationId: string) => void;
 }) {
   const totalShown = orders.reduce((sum, order) => sum + parseMoney(order.total_amount), 0);
@@ -990,6 +1142,10 @@ function CustomerOrdersList({
                   order={orderDetail}
                   loading={orderDetailLoading}
                   error={orderDetailError}
+                  updateError={orderUpdateError}
+                  updating={orderUpdating}
+                  onUpdate={onUpdateOrder}
+                  onCancel={onCancelOrder}
                   onOpenConversation={onOpenConversation}
                 />
               ) : null}
@@ -1026,13 +1182,27 @@ function OrderDetailPanel({
   order,
   loading,
   error,
+  updateError,
+  updating,
+  onUpdate,
+  onCancel,
   onOpenConversation
 }: {
   order: OrderResponse | null;
   loading: boolean;
   error: boolean;
+  updateError: string | null;
+  updating: boolean;
+  onUpdate: (orderUuid: string, payload: OrderUpdatePayload) => Promise<void>;
+  onCancel: (orderUuid: string, orderNumber: string) => void;
   onOpenConversation?: (conversationId: string) => void;
 }) {
+  const [lifecycleDraft, setLifecycleDraft] = useState<OrderLifecycleDraft | null>(null);
+
+  useEffect(() => {
+    setLifecycleDraft(order ? buildOrderLifecycleDraft(order) : null);
+  }, [order?.payment_status, order?.shipping_status, order?.status, order?.uuid]);
+
   if (loading) {
     return (
       <div className="customer-order-detail">
@@ -1049,6 +1219,11 @@ function OrderDetailPanel({
     return <Empty description="No order detail loaded" />;
   }
 
+  const currentDraft = lifecycleDraft ?? buildOrderLifecycleDraft(order);
+  const updatePayload = buildLifecycleUpdatePayload(order, currentDraft);
+  const hasChanges = Object.keys(updatePayload).length > 0;
+  const isCancelled = order.status === "cancelled";
+
   return (
     <div className="customer-order-detail">
       <div className="customer-order-detail-grid">
@@ -1057,6 +1232,61 @@ function OrderDetailPanel({
         <OrderField label="Shipping fee" value={`${safeText(order.shipping_fee)} ${safeText(order.currency)}`.trim()} />
         <OrderField label="Total" value={`${safeText(order.total_amount)} ${safeText(order.currency)}`.trim()} />
       </div>
+
+      <section className="customer-order-lifecycle" aria-label="Order lifecycle status">
+        <div className="customer-order-lifecycle-grid">
+          <div>
+            <span className="messenger-profile-label">Order status</span>
+            <Select<OrderStatus>
+              value={currentDraft.status}
+              options={ORDER_LIFECYCLE_STATUS_OPTIONS}
+              onChange={(status) => setLifecycleDraft({ ...currentDraft, status })}
+              disabled={updating || isCancelled}
+              aria-label="Order status"
+            />
+          </div>
+          <div>
+            <span className="messenger-profile-label">Payment status</span>
+            <Select<PaymentStatus>
+              value={currentDraft.payment_status}
+              options={PAYMENT_STATUS_OPTIONS}
+              onChange={(payment_status) => setLifecycleDraft({ ...currentDraft, payment_status })}
+              disabled={updating}
+              aria-label="Payment status"
+            />
+          </div>
+          <div>
+            <span className="messenger-profile-label">Shipping status</span>
+            <Select<ShippingStatus>
+              value={currentDraft.shipping_status}
+              options={SHIPPING_STATUS_OPTIONS}
+              onChange={(shipping_status) => setLifecycleDraft({ ...currentDraft, shipping_status })}
+              disabled={updating}
+              aria-label="Shipping status"
+            />
+          </div>
+        </div>
+        {isCancelled ? (
+          <Alert type="warning" showIcon message="This order is cancelled and cannot be reopened." />
+        ) : null}
+        {updateError ? <Alert type="error" showIcon message={updateError} /> : null}
+        <Space wrap>
+          <Button
+            size="small"
+            type="primary"
+            loading={updating}
+            disabled={!hasChanges || updating}
+            onClick={() => void onUpdate(order.uuid, updatePayload)}
+          >
+            Save statuses
+          </Button>
+          {!isCancelled ? (
+            <Button size="small" danger disabled={updating} onClick={() => onCancel(order.uuid, order.order_number)}>
+              Cancel order
+            </Button>
+          ) : null}
+        </Space>
+      </section>
 
       {order.shipping_address ? (
         <div>
@@ -1114,6 +1344,31 @@ function buildEmptyOrderItemDraft(): CreateOrderItemDraft {
     unit_price: 0,
     note: ""
   };
+}
+
+function buildOrderLifecycleDraft(order: OrderResponse): OrderLifecycleDraft {
+  return {
+    status: order.status,
+    payment_status: order.payment_status,
+    shipping_status: order.shipping_status
+  };
+}
+
+function buildLifecycleUpdatePayload(
+  order: OrderResponse,
+  draft: OrderLifecycleDraft
+): OrderUpdatePayload {
+  const payload: OrderUpdatePayload = {};
+  if (order.status !== draft.status) {
+    payload.status = draft.status;
+  }
+  if (order.payment_status !== draft.payment_status) {
+    payload.payment_status = draft.payment_status;
+  }
+  if (order.shipping_status !== draft.shipping_status) {
+    payload.shipping_status = draft.shipping_status;
+  }
+  return payload;
 }
 
 function buildEmptyOrderDraft(): CreateOrderDraft {
@@ -1179,7 +1434,10 @@ function normaliseNumberInput(value: number | string | null, fallback: number): 
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
-function getReadableError(error: unknown): string {
+function getReadableError(
+  error: unknown,
+  fallback = "Could not create order. Please check the form and try again."
+): string {
   if (typeof error === "object" && error !== null && "response" in error) {
     const response = (error as { response?: { data?: { detail?: unknown } } }).response;
     const detail = response?.data?.detail;
@@ -1190,7 +1448,7 @@ function getReadableError(error: unknown): string {
       return "Some order fields are invalid. Please review the form and try again.";
     }
   }
-  return "Could not create order. Please check the form and try again.";
+  return fallback;
 }
 
 function formatTimestamp(value: string | null): string {

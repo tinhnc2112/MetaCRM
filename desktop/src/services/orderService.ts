@@ -1,5 +1,12 @@
 import { apiClient } from "./apiClient";
-import type { CustomerOrderSummary, OrderCreatePayload, OrderListResponse, OrderResponse, OrderStatus } from "../types/order";
+import type {
+  CustomerOrderSummary,
+  OrderCreatePayload,
+  OrderListResponse,
+  OrderResponse,
+  OrderStatus,
+  OrderUpdatePayload
+} from "../types/order";
 
 export async function listCustomerOrders(
   customerUuid: string,
@@ -36,5 +43,13 @@ export async function getCustomerOrderSummary(customerUuid: string): Promise<Cus
 
 export async function createOrder(payload: OrderCreatePayload): Promise<OrderResponse> {
   const response = await apiClient.post<OrderResponse>("/api/v1/facebook/orders", payload);
+  return response.data;
+}
+
+export async function updateOrder(orderUuid: string, payload: OrderUpdatePayload): Promise<OrderResponse> {
+  const response = await apiClient.patch<OrderResponse>(
+    `/api/v1/facebook/orders/${encodeURIComponent(orderUuid)}`,
+    payload
+  );
   return response.data;
 }

@@ -456,6 +456,26 @@ body {
   gap: 10px;
 }
 
+.customer-order-lifecycle {
+  padding: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.customer-order-lifecycle-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.customer-order-lifecycle-grid .ant-select {
+  width: 100%;
+}
+
 .customer-order-items {
   display: flex;
   flex-direction: column;
