@@ -1,6 +1,8 @@
-from fastapi.testclient import TestClient
-
+import pytest
 from app.main import app
+from fastapi import status
+from fastapi.testclient import TestClient
+from fastapi.websockets import WebSocketDisconnect
 
 
 def test_health() -> None:
@@ -17,9 +19,9 @@ def test_version() -> None:
     assert response.json()["version"]
 
 
-def test_websocket_connection_and_ping_pong() -> None:
+def test_websocket_rejects_anonymous_connection() -> None:
     with TestClient(app) as client:
-        with client.websocket_connect("/api/v1/ws") as websocket:
-            assert websocket.receive_json() == {"type": "connection", "status": "connected"}
-            websocket.send_json({"type": "ping"})
-            assert websocket.receive_json() == {"type": "pong"}
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect("/api/v1/ws") as websocket:
+                websocket.receive_json()
+    assert exc_info.value.code == status.WS_1008_POLICY_VIOLATION

@@ -22,6 +22,7 @@ import {
   updateCustomerTag
 } from "../services/customerTagService";
 import { listConversations, listMessages, markConversationRead, sendMessage } from "../services/messengerService";
+import { useAuthStore } from "../stores/authStore";
 import type { Conversation, Message } from "../types/messenger";
 import type { CustomerTag } from "../types/customer";
 
@@ -40,6 +41,7 @@ export function MessengerInboxPage() {
   const [sendError, setSendError] = useState<string | null>(null);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
+  const accessToken = useAuthStore((state) => state.session?.accessToken ?? null);
   const selectedConversationId = searchParams.get("conversationId");
 
   const currentPageQuery = useQuery({
@@ -211,16 +213,16 @@ export function MessengerInboxPage() {
   });
 
   useEffect(() => {
-    if (!currentPageId) {
+    if (!currentPageId || !accessToken) {
       return;
     }
 
     const baseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
     const wsUrl = new URL("/api/v1/ws", baseUrl);
     wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
-    wsUrl.searchParams.set("channel", `page:${currentPageId}`);
+    wsUrl.searchParams.set("page_id", currentPageId);
 
-    const socket = new WebSocket(wsUrl.toString());
+    const socket = new WebSocket(wsUrl.toString(), ["metacrm", `bearer.${accessToken}`]);
     socket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") {
         return;
@@ -244,7 +246,7 @@ export function MessengerInboxPage() {
     return () => {
       socket.close();
     };
-  }, [currentPageId, queryClient, selectedConversationId]);
+  }, [accessToken, currentPageId, queryClient, selectedConversationId]);
 
   useEffect(() => {
     if (selectedConversationId) {

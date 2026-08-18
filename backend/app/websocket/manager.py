@@ -11,8 +11,14 @@ class ConnectionManager:
     def __init__(self) -> None:
         self._connections: dict[str, set[WebSocket]] = defaultdict(set)
 
-    async def connect(self, websocket: WebSocket, channel: str = "default") -> None:
-        await websocket.accept()
+    async def connect(
+        self,
+        websocket: WebSocket,
+        channel: str = "default",
+        *,
+        subprotocol: str | None = None,
+    ) -> None:
+        await websocket.accept(subprotocol=subprotocol)
         self._connections[channel].add(websocket)
 
     def disconnect(self, websocket: WebSocket, channel: str = "default") -> None:

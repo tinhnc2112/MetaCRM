@@ -19,6 +19,18 @@ credentials_exception = HTTPException(
 )
 
 
+def resolve_user_from_access_token(session: Session, token: str) -> User | None:
+    """Resolve a valid access token without depending on HTTP bearer transport."""
+    try:
+        payload = decode_access_token(token)
+        if payload.get("type") != "access":
+            return None
+        user_uuid = UUID(payload["sub"])
+    except (InvalidTokenError, KeyError, ValueError, TypeError):
+        return None
+    return session.query(User).filter(User.uuid == user_uuid, User.deleted_at.is_(None)).first()
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     session: Session = Depends(get_db_session),
@@ -26,14 +38,7 @@ def get_current_user(
     """Resolve a valid access-token bearer to its user."""
     if credentials is None:
         raise credentials_exception
-    try:
-        payload = decode_access_token(credentials.credentials)
-        if payload.get("type") != "access":
-            raise credentials_exception
-        user_uuid = UUID(payload["sub"])
-    except (InvalidTokenError, KeyError, ValueError, TypeError):
-        raise credentials_exception from None
-    user = session.query(User).filter(User.uuid == user_uuid, User.deleted_at.is_(None)).first()
+    user = resolve_user_from_access_token(session, credentials.credentials)
     if user is None:
         raise credentials_exception
     return user

@@ -7,12 +7,11 @@ from datetime import UTC, datetime
 
 from app.models.auth import User
 from app.models.facebook import FacebookAccount, FacebookPage, UserPageContext
-from sqlalchemy.orm import Session
-
 from app.services.facebook.auth import FacebookToken, FacebookUserInfo
 from app.services.facebook.client import FacebookGraphClient
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.exceptions import FacebookPageUnavailableError
+from sqlalchemy.orm import Session
 
 
 @dataclass(frozen=True)
@@ -156,7 +155,10 @@ def get_page_for_user(session: Session, user: User, page_id: str) -> FacebookPag
         .join(FacebookAccount, FacebookAccount.id == FacebookPage.facebook_account_id)
         .filter(
             FacebookAccount.user_id == user.id,
+            FacebookAccount.is_active.is_(True),
+            FacebookAccount.deleted_at.is_(None),
             FacebookPage.page_id == page_id,
+            FacebookPage.is_active.is_(True),
             FacebookPage.deleted_at.is_(None),
         )
         .first()

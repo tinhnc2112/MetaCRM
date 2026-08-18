@@ -29,8 +29,11 @@ from app.services.facebook.messenger import (
     upsert_message,
     verify_webhook_signature,
 )
+from app.utils.jwt import create_access_token
 from app.websocket.manager import ConnectionManager
+from fastapi import status
 from fastapi.testclient import TestClient
+from fastapi.websockets import WebSocketDisconnect
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -117,6 +120,65 @@ def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> Generator[TestC
 def _make_signature(body: bytes, secret: str = TEST_APP_SECRET) -> str:
     digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     return f"sha256={digest}"
+
+
+def _websocket_url(*, page_id: str | None = None) -> str:
+    params: list[str] = []
+    if page_id is not None:
+        params.append(f"page_id={page_id}")
+    query = f"?{'&'.join(params)}" if params else ""
+    return f"/api/v1/ws{query}"
+
+
+def _access_token(session: Session, username: str = "alice") -> str:
+    user = session.query(User).filter(User.username == username).one()
+    return create_access_token(str(user.uuid))
+
+
+def _add_user_page(session: Session, *, username: str, page_id: str) -> tuple[User, FacebookPage]:
+    user = User(
+        username=username,
+        email=f"{username}@example.com",
+        password_hash="hashed",
+        full_name=username.title(),
+    )
+    session.add(user)
+    session.flush()
+    cipher = TokenCipher(TEST_TOKEN_KEY)
+    account = FacebookAccount(
+        user_id=user.id,
+        facebook_user_id=f"fb-{username}",
+        access_token_encrypted=cipher.encrypt(f"{username}-token"),
+        token_expires_at=datetime.now(UTC) + timedelta(days=30),
+    )
+    session.add(account)
+    session.flush()
+    page = FacebookPage(
+        facebook_account_id=account.id,
+        page_id=page_id,
+        name=f"{username.title()} Page",
+        is_active=True,
+    )
+    session.add(page)
+    session.commit()
+    return user, page
+
+
+def _websocket_protocols(access_token: str) -> list[str]:
+    return ["metacrm", f"bearer.{access_token}"]
+
+
+def _assert_websocket_rejected(
+    client: TestClient,
+    url: str,
+    *,
+    access_token: str | None = None,
+) -> None:
+    protocols = _websocket_protocols(access_token) if access_token is not None else None
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(url, subprotocols=protocols) as websocket:
+            websocket.receive_json()
+    assert exc_info.value.code == status.WS_1008_POLICY_VIOLATION
 
 
 def _message_payload(
@@ -730,7 +792,7 @@ class TestWebhookReceive:
         assert channel == "page:page-111"
         broadcasted = json.loads(call_kwargs.args[0])
         assert broadcasted["type"] == "new_message"
-        assert broadcasted["page_id"] == "page-111"
+        assert set(broadcasted) == {"type", "conversation_id"}
 
     def test_broadcast_not_called_for_duplicate(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
@@ -750,14 +812,132 @@ class TestWebhookReceive:
 
 
 # ---------------------------------------------------------------------------
-# WebSocket test — ConnectionManager integration
+# Authenticated WebSocket security regression tests
 # ---------------------------------------------------------------------------
 
 
-def test_websocket_uses_connection_manager(client: TestClient) -> None:
-    """ws.py now connects/disconnects via app.state.manager."""
-    with client.websocket_connect("/api/v1/ws?channel=page:page-111") as ws:
-        data = ws.receive_json()
-        assert data == {"type": "connection", "status": "connected"}
-        ws.send_json({"type": "ping"})
-        assert ws.receive_json() == {"type": "pong"}
+class TestAuthenticatedWebSocket:
+    def test_unauthenticated_websocket_is_rejected(self, client: TestClient) -> None:
+        _assert_websocket_rejected(client, _websocket_url(page_id="page-111"))
+
+    def test_malformed_token_is_rejected(self, client: TestClient) -> None:
+        _assert_websocket_rejected(
+            client,
+            _websocket_url(page_id="page-111"),
+            access_token="not-a-jwt",
+        )
+
+    def test_expired_token_is_rejected(self, client: TestClient, session: Session) -> None:
+        settings = get_settings()
+        original_expiry = settings.access_token_expire_minutes
+        try:
+            settings.access_token_expire_minutes = -1
+            expired_token = _access_token(session)
+        finally:
+            settings.access_token_expire_minutes = original_expiry
+
+        _assert_websocket_rejected(
+            client,
+            _websocket_url(page_id="page-111"),
+            access_token=expired_token,
+        )
+
+    def test_owner_can_connect_and_ping(self, client: TestClient, session: Session) -> None:
+        token = _access_token(session)
+        url = _websocket_url(page_id="page-111")
+        with client.websocket_connect(url, subprotocols=_websocket_protocols(token)) as websocket:
+            assert websocket.receive_json() == {"type": "connection", "status": "connected"}
+            websocket.send_json({"type": "ping"})
+            assert websocket.receive_json() == {"type": "pong"}
+
+    def test_user_cannot_connect_to_foreign_page(
+        self, client: TestClient, session: Session
+    ) -> None:
+        _add_user_page(session, username="bob", page_id="page-bob")
+        _assert_websocket_rejected(
+            client,
+            _websocket_url(page_id="page-bob"),
+            access_token=_access_token(session),
+        )
+
+    def test_unknown_page_is_rejected(self, client: TestClient, session: Session) -> None:
+        _assert_websocket_rejected(
+            client,
+            _websocket_url(page_id="page-unknown"),
+            access_token=_access_token(session),
+        )
+
+    def test_raw_channel_contract_is_rejected(self, client: TestClient, session: Session) -> None:
+        token = _access_token(session)
+        _assert_websocket_rejected(
+            client,
+            "/api/v1/ws?channel=page:page-111",
+            access_token=token,
+        )
+
+    def test_access_token_in_query_string_is_rejected(
+        self, client: TestClient, session: Session
+    ) -> None:
+        token = _access_token(session)
+        _assert_websocket_rejected(
+            client,
+            f"/api/v1/ws?page_id=page-111&access_token={token}",
+        )
+
+    def test_inactive_user_is_rejected(self, client: TestClient, session: Session) -> None:
+        user = session.query(User).filter(User.username == "alice").one()
+        token = create_access_token(str(user.uuid))
+        user.is_active = False
+        session.commit()
+        _assert_websocket_rejected(
+            client,
+            _websocket_url(page_id="page-111"),
+            access_token=token,
+        )
+
+    def test_owner_receives_minimal_event_for_own_page(
+        self, client: TestClient, session: Session
+    ) -> None:
+        token = _access_token(session)
+        url = _websocket_url(page_id="page-111")
+        with client.websocket_connect(url, subprotocols=_websocket_protocols(token)) as websocket:
+            assert websocket.receive_json()["status"] == "connected"
+            payload = _message_payload(text="sensitive message", psid="sensitive-psid")
+            body = json.dumps(payload).encode()
+            response = client.post(
+                "/api/v1/facebook/webhook",
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Hub-Signature-256": _make_signature(body),
+                },
+            )
+            assert response.status_code == 200
+            event = websocket.receive_json()
+            assert event["type"] == "new_message"
+            assert event["conversation_id"]
+            assert set(event) == {"type", "conversation_id"}
+            assert "psid" not in event
+            assert "text" not in event
+
+    def test_page_a_socket_does_not_receive_page_b_event(
+        self, client: TestClient, session: Session
+    ) -> None:
+        _add_user_page(session, username="bob", page_id="page-bob")
+        token = _access_token(session)
+        url = _websocket_url(page_id="page-111")
+        with client.websocket_connect(url, subprotocols=_websocket_protocols(token)) as websocket:
+            assert websocket.receive_json()["status"] == "connected"
+            payload = _message_payload(page_id="page-bob", mid="m_page_b")
+            body = json.dumps(payload).encode()
+            response = client.post(
+                "/api/v1/facebook/webhook",
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Hub-Signature-256": _make_signature(body),
+                },
+            )
+            assert response.status_code == 200
+            websocket.send_json({"type": "ping"})
+            assert websocket.receive_json() == {"type": "pong"}

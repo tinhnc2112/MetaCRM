@@ -128,7 +128,7 @@ async def webhook_receive(
 
     # -- 5. broadcast new messages via ConnectionManager ----------------------
     manager: ConnectionManager = request.app.state.manager
-    for conversation, message, was_created in results:
+    for conversation, _message, was_created in results:
         if not was_created:
             continue  # duplicate — skip broadcast
 
@@ -136,13 +136,6 @@ async def webhook_receive(
             {
                 "type": "new_message",
                 "conversation_id": str(conversation.uuid),
-                "page_id": conversation.page_id,
-                "psid": conversation.psid,
-                "message_id": str(message.uuid),
-                "event_type": message.event_type,
-                "is_from_page": message.is_from_page,
-                "text": message.text,
-                "sent_at": message.sent_at.isoformat() if message.sent_at else None,
             }
         )
         # Broadcast on the page-scoped channel so only the owning user's
