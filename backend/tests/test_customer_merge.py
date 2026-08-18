@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 from app.core.config import get_settings
@@ -11,9 +12,18 @@ from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
 from app.models.auth import User
-from app.models.customers import CustomerMerge, CustomerNote
+from app.models.customer_core import CustomerIdentity
+from app.models.customers import (
+    CustomerMerge,
+    CustomerNote,
+    CustomerTag,
+    CustomerTagAssignment,
+    CustomerTagEvent,
+)
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation, Message
+from app.models.orders import Order
+from app.services.customer_identity import CHANNEL_FACEBOOK, resolve_customer_for_conversation
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.pages import select_current_page
 from app.utils.jwt import create_access_token
@@ -429,3 +439,264 @@ def test_repeated_merge_returns_existing_history(client: TestClient, session: Se
     )
     assert second.status_code == 200
     assert session.query(CustomerMerge).count() == 1
+
+
+def test_merge_rejects_secondary_cross_page_history_before_any_mutation(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page_a = _make_page(session, alice, "page-merge-boundary-a")
+    page_b = _make_page(session, alice, "page-merge-boundary-b")
+    _select_page(session, alice, page_a)
+    primary = _make_conversation(
+        session,
+        page_a,
+        "psid-boundary-primary",
+        customer_name="Boundary Customer",
+        customer_avatar_url="https://img.example.com/boundary.png",
+    )
+    secondary = _make_conversation(
+        session,
+        page_a,
+        "psid-boundary-secondary",
+        customer_name="Boundary Customer",
+        customer_avatar_url="https://img.example.com/boundary.png",
+    )
+    primary_customer_id = resolve_customer_for_conversation(session, primary)
+    secondary_customer_id = resolve_customer_for_conversation(session, secondary)
+    page_b_conversation = _make_conversation(
+        session, page_b, "psid-boundary-secondary-page-b"
+    )
+    page_b_conversation.customer_id = secondary_customer_id
+    tag_b = CustomerTag(facebook_page_id=page_b.id, name="Page B", slug="page-b")
+    session.add(tag_b)
+    session.flush()
+    note_b = CustomerNote(
+        conversation_id=page_b_conversation.id,
+        customer_id=secondary_customer_id,
+        user_id=alice.id,
+        content="Page B note",
+    )
+    assignment_b = CustomerTagAssignment(
+        conversation_id=page_b_conversation.id,
+        customer_id=secondary_customer_id,
+        tag_id=tag_b.id,
+    )
+    event_b = CustomerTagEvent(
+        conversation_id=page_b_conversation.id,
+        customer_id=secondary_customer_id,
+        tag_id=tag_b.id,
+        user_id=alice.id,
+        action="added",
+        tag_name_snapshot=tag_b.name,
+        tag_slug_snapshot=tag_b.slug,
+    )
+    order_b = Order(
+        facebook_page_id=page_b.id,
+        customer_id=secondary_customer_id,
+        conversation_id=page_b_conversation.id,
+        order_number="ORD-PAGE-B",
+        subtotal_amount=Decimal("10.00"),
+        total_amount=Decimal("10.00"),
+    )
+    identity_b = CustomerIdentity(
+        customer_id=secondary_customer_id,
+        facebook_page_id=page_b.id,
+        channel=CHANNEL_FACEBOOK,
+        external_id=page_b_conversation.psid,
+    )
+    session.add_all([page_b_conversation, note_b, assignment_b, event_b, order_b, identity_b])
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/facebook/customers/{primary.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(secondary.uuid)),
+    )
+
+    assert response.status_code == 422
+    assert "spans multiple Facebook Pages" in response.json()["detail"]
+    session.expire_all()
+    assert session.get(Conversation, secondary.id).customer_id == secondary_customer_id
+    assert session.get(Conversation, page_b_conversation.id).customer_id == secondary_customer_id
+    assert session.get(CustomerIdentity, identity_b.id).customer_id == secondary_customer_id
+    assert session.get(CustomerNote, note_b.id).customer_id == secondary_customer_id
+    assert session.get(CustomerTagAssignment, assignment_b.id).customer_id == secondary_customer_id
+    assert session.get(CustomerTagEvent, event_b.id).customer_id == secondary_customer_id
+    assert session.get(Order, order_b.id).customer_id == secondary_customer_id
+    assert session.get(CustomerIdentity, identity_b.id).facebook_page_id == page_b.id
+    assert session.get(Conversation, primary.id).customer_id == primary_customer_id
+    assert session.query(CustomerMerge).count() == 0
+
+
+def test_merge_rejects_primary_with_other_page_presence(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page_a = _make_page(session, alice, "page-primary-footprint-a")
+    page_b = _make_page(session, alice, "page-primary-footprint-b")
+    _select_page(session, alice, page_a)
+    primary = _make_conversation(
+        session,
+        page_a,
+        "psid-primary-footprint",
+        customer_name="Primary Footprint",
+        customer_avatar_url="https://img.example.com/primary-footprint.png",
+    )
+    secondary = _make_conversation(
+        session,
+        page_a,
+        "psid-secondary-footprint",
+        customer_name="Primary Footprint",
+        customer_avatar_url="https://img.example.com/primary-footprint.png",
+    )
+    primary_customer_id = resolve_customer_for_conversation(session, primary)
+    secondary_customer_id = resolve_customer_for_conversation(session, secondary)
+    other_page_conversation = _make_conversation(session, page_b, "psid-primary-other-page")
+    other_page_conversation.customer_id = primary_customer_id
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/facebook/customers/{primary.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(secondary.uuid)),
+    )
+
+    assert response.status_code == 422
+    session.expire_all()
+    assert session.get(Conversation, secondary.id).customer_id == secondary_customer_id
+    assert session.get(Conversation, other_page_conversation.id).customer_id == primary_customer_id
+    assert session.query(CustomerMerge).count() == 0
+
+
+def test_merge_rejects_secondary_with_other_page_order_only(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page_a = _make_page(session, alice, "page-order-footprint-a")
+    page_b = _make_page(session, alice, "page-order-footprint-b")
+    _select_page(session, alice, page_a)
+    primary = _make_conversation(
+        session,
+        page_a,
+        "psid-order-primary",
+        customer_name="Order Footprint",
+        customer_avatar_url="https://img.example.com/order-footprint.png",
+    )
+    secondary = _make_conversation(
+        session,
+        page_a,
+        "psid-order-secondary",
+        customer_name="Order Footprint",
+        customer_avatar_url="https://img.example.com/order-footprint.png",
+    )
+    secondary_customer_id = resolve_customer_for_conversation(session, secondary)
+    resolve_customer_for_conversation(session, primary)
+    order_b = Order(
+        facebook_page_id=page_b.id,
+        customer_id=secondary_customer_id,
+        order_number="ORD-OTHER-PAGE-ONLY",
+        subtotal_amount=Decimal("5.00"),
+        total_amount=Decimal("5.00"),
+    )
+    session.add(order_b)
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/facebook/customers/{primary.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(secondary.uuid)),
+    )
+
+    assert response.status_code == 422
+    assert session.get(Order, order_b.id).customer_id == secondary_customer_id
+    assert session.query(CustomerMerge).count() == 0
+
+
+def test_merge_rejects_secondary_with_other_page_identity_only(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page_a = _make_page(session, alice, "page-identity-footprint-a")
+    page_b = _make_page(session, alice, "page-identity-footprint-b")
+    _select_page(session, alice, page_a)
+    primary = _make_conversation(
+        session,
+        page_a,
+        "psid-identity-primary",
+        customer_name="Identity Footprint",
+        customer_avatar_url="https://img.example.com/identity-footprint.png",
+    )
+    secondary = _make_conversation(
+        session,
+        page_a,
+        "psid-identity-secondary",
+        customer_name="Identity Footprint",
+        customer_avatar_url="https://img.example.com/identity-footprint.png",
+    )
+    secondary_customer_id = resolve_customer_for_conversation(session, secondary)
+    resolve_customer_for_conversation(session, primary)
+    identity_b = CustomerIdentity(
+        customer_id=secondary_customer_id,
+        facebook_page_id=page_b.id,
+        channel=CHANNEL_FACEBOOK,
+        external_id="psid-identity-page-b-only",
+    )
+    session.add(identity_b)
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/facebook/customers/{primary.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(secondary.uuid)),
+    )
+
+    assert response.status_code == 422
+    assert session.get(CustomerIdentity, identity_b.id).customer_id == secondary_customer_id
+    assert session.query(CustomerMerge).count() == 0
+
+
+def test_merge_rejects_inconsistent_note_ownership_before_mutation(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page = _make_page(session, alice, "page-inconsistent-note")
+    _select_page(session, alice, page)
+    primary = _make_conversation(
+        session,
+        page,
+        "psid-inconsistent-primary",
+        customer_name="Inconsistent Note",
+        customer_avatar_url="https://img.example.com/inconsistent-note.png",
+    )
+    secondary = _make_conversation(
+        session,
+        page,
+        "psid-inconsistent-secondary",
+        customer_name="Inconsistent Note",
+        customer_avatar_url="https://img.example.com/inconsistent-note.png",
+    )
+    primary_customer_id = resolve_customer_for_conversation(session, primary)
+    secondary_customer_id = resolve_customer_for_conversation(session, secondary)
+    inconsistent_note = CustomerNote(
+        conversation_id=primary.id,
+        customer_id=secondary_customer_id,
+        user_id=alice.id,
+        content="Inconsistent ownership",
+    )
+    session.add(inconsistent_note)
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/facebook/customers/{primary.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(secondary.uuid)),
+    )
+
+    assert response.status_code == 422
+    assert "inconsistent Facebook Page ownership" in response.json()["detail"]
+    session.expire_all()
+    assert session.get(Conversation, primary.id).customer_id == primary_customer_id
+    assert session.get(Conversation, secondary.id).customer_id == secondary_customer_id
+    assert session.get(CustomerNote, inconsistent_note.id).customer_id == secondary_customer_id
+    assert session.query(CustomerMerge).count() == 0

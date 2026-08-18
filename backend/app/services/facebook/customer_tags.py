@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime
 import re
 import unicodedata
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal
 
 from app.models.auth import User
@@ -15,7 +15,7 @@ from app.models.messenger import Conversation
 from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.conversations import PaginatedResult, get_conversation_for_user
 from app.services.facebook.pages import get_current_page
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 
@@ -90,6 +90,7 @@ def _customer_count_map(session: Session, page: FacebookPage, tag_ids: list[int]
             CustomerTagAssignment.tag_id.in_(tag_ids),
             Conversation.facebook_page_id == page.id,
             Conversation.deleted_at.is_(None),
+            Conversation.customer_id == CustomerTagAssignment.customer_id,
         )
         .group_by(CustomerTagAssignment.tag_id)
         .all()
@@ -274,8 +275,12 @@ def list_tags_for_customer(session: Session, customer_id: int, facebook_page_id:
     return (
         session.query(CustomerTag)
         .join(CustomerTagAssignment, CustomerTagAssignment.tag_id == CustomerTag.id)
+        .join(Conversation, Conversation.id == CustomerTagAssignment.conversation_id)
         .filter(
             CustomerTagAssignment.customer_id == customer_id,
+            Conversation.customer_id == customer_id,
+            Conversation.facebook_page_id == facebook_page_id,
+            Conversation.deleted_at.is_(None),
             CustomerTag.facebook_page_id == facebook_page_id,
         )
         .order_by(CustomerTag.name.asc(), CustomerTag.id.asc())
@@ -284,10 +289,26 @@ def list_tags_for_customer(session: Session, customer_id: int, facebook_page_id:
     )
 
 
-def list_tag_events_for_customer(session: Session, customer_id: int) -> list[CustomerTagEventData]:
+def list_tag_events_for_customer(
+    session: Session, customer_id: int, facebook_page_id: int
+) -> list[CustomerTagEventData]:
     rows = (
         session.query(CustomerTagEvent)
-        .filter(CustomerTagEvent.customer_id == customer_id)
+        .join(Conversation, Conversation.id == CustomerTagEvent.conversation_id)
+        .outerjoin(CustomerTag, CustomerTag.id == CustomerTagEvent.tag_id)
+        .filter(
+            CustomerTagEvent.customer_id == customer_id,
+            Conversation.customer_id == customer_id,
+            Conversation.facebook_page_id == facebook_page_id,
+            Conversation.deleted_at.is_(None),
+            or_(
+                CustomerTagEvent.tag_id.is_(None),
+                and_(
+                    CustomerTag.id.is_not(None),
+                    CustomerTag.facebook_page_id == facebook_page_id,
+                ),
+            ),
+        )
         .order_by(CustomerTagEvent.created_at.desc(), CustomerTagEvent.id.desc())
         .all()
     )
@@ -316,6 +337,9 @@ def assign_customer_tag(
     conversation = get_conversation_for_user(session, user, conversation_id)
     if conversation is None:
         return None
+    current_page = _current_page(session, user)
+    if current_page is not None and conversation.facebook_page_id != current_page.id:
+        return None
 
     tag = get_customer_tag_for_conversation(session, conversation, tag_id)
     if tag is None:
@@ -332,6 +356,15 @@ def assign_customer_tag(
         )
         .first()
     )
+    if assignment is not None:
+        assignment_conversation = session.get(Conversation, assignment.conversation_id)
+        if (
+            assignment_conversation is None
+            or assignment_conversation.deleted_at is not None
+            or assignment_conversation.facebook_page_id != conversation.facebook_page_id
+            or assignment_conversation.customer_id != customer_id
+        ):
+            return None
     if assignment is None:
         assignment = CustomerTagAssignment(
             conversation_id=conversation.id, customer_id=customer_id, tag_id=tag.id
@@ -360,6 +393,9 @@ def remove_customer_tag(
     conversation = get_conversation_for_user(session, user, conversation_id)
     if conversation is None:
         return None
+    current_page = _current_page(session, user)
+    if current_page is not None and conversation.facebook_page_id != current_page.id:
+        return None
 
     tag = get_customer_tag_for_conversation(session, conversation, tag_id)
     if tag is None:
@@ -374,6 +410,15 @@ def remove_customer_tag(
         )
         .first()
     )
+    if assignment is not None:
+        assignment_conversation = session.get(Conversation, assignment.conversation_id)
+        if (
+            assignment_conversation is None
+            or assignment_conversation.deleted_at is not None
+            or assignment_conversation.facebook_page_id != conversation.facebook_page_id
+            or assignment_conversation.customer_id != customer_id
+        ):
+            return None
     if assignment is not None:
         event = CustomerTagEvent(
             conversation_id=conversation.id,

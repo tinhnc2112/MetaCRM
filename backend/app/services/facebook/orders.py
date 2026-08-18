@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Mapping, Sequence
+from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID, uuid4
 
 from app.models.auth import User
@@ -16,7 +16,7 @@ from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.conversations import PaginatedResult, get_conversation_for_user
 from app.services.facebook.pages import get_current_page
 from app.services.facebook.products import resolve_product_for_order_item
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 MONEY_QUANTUM = Decimal("0.01")
@@ -84,6 +84,18 @@ def _customer_on_page(session: Session, customer_id: int, page_id: int) -> bool:
     )
 
 
+def _order_conversation_is_page_consistent(page_id: int):
+    return or_(
+        Order.conversation_id.is_(None),
+        Order.conversation.has(
+            and_(
+                Conversation.facebook_page_id == page_id,
+                Conversation.customer_id == Order.customer_id,
+            )
+        ),
+    )
+
+
 def _resolve_customer_for_page(session: Session, user: User, customer_uuid: str) -> Customer | None:
     page = _current_page(session, user)
     if page is None:
@@ -120,6 +132,7 @@ def _resolve_order_for_page(session: Session, user: User, order_uuid: str) -> Or
             Order.public_id == public_id,
             Order.facebook_page_id == page.id,
             Order.deleted_at.is_(None),
+            _order_conversation_is_page_consistent(page.id),
         )
         .first()
     )
@@ -233,7 +246,11 @@ def list_orders(
     page_size = min(page_size, 100)
     page = max(page, 1)
 
-    query = session.query(Order).filter(Order.facebook_page_id == page_obj.id, Order.deleted_at.is_(None))
+    query = session.query(Order).filter(
+        Order.facebook_page_id == page_obj.id,
+        Order.deleted_at.is_(None),
+        _order_conversation_is_page_consistent(page_obj.id),
+    )
     if customer_id is not None:
         query = query.filter(Order.customer_id == customer_id)
     if status:
@@ -457,6 +474,7 @@ def get_customer_order_summary(
         Order.facebook_page_id == page_obj.id,
         Order.customer_id == customer.id,
         Order.deleted_at.is_(None),
+        _order_conversation_is_page_consistent(page_obj.id),
     )
     order_count, latest_order_at = (
         session.query(func.count(Order.id), func.max(Order.created_at))

@@ -12,15 +12,15 @@ from app.models.customer_core import Customer
 from app.models.customers import CustomerMerge, CustomerNote, CustomerTag
 from app.models.messenger import Conversation, Message
 from app.services.customer_identity import resolve_customer_for_conversation
-from app.services.facebook.customer_tags import list_tag_events_for_customer, list_tags_for_customer
 from app.services.facebook.conversations import (
     PaginatedResult,
     get_conversation_for_user,
     get_user_page_ids,
     unread_count_for_conversation,
 )
+from app.services.facebook.customer_tags import list_tag_events_for_customer, list_tags_for_customer
 from app.services.facebook.pages import get_current_page
-from sqlalchemy import and_, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 
@@ -144,12 +144,10 @@ def _build_customer_profile(
     notes = (
         session.query(CustomerNote)
         .filter(
+            CustomerNote.conversation_id.in_(conversation_ids),
             or_(
                 CustomerNote.customer_id == customer.id,
-                and_(
-                    CustomerNote.customer_id.is_(None),
-                    CustomerNote.conversation_id.in_(conversation_ids),
-                ),
+                CustomerNote.customer_id.is_(None),
             ),
             CustomerNote.deleted_at.is_(None),
         )
@@ -170,7 +168,9 @@ def _build_customer_profile(
             tag_name=event.tag_name,
             tag_slug=event.tag_slug,
         )
-        for event in list_tag_events_for_customer(session, customer.id)
+        for event in list_tag_events_for_customer(
+            session, customer.id, conversation.facebook_page_id
+        )
     ]
     messages = (
         session.query(Message)
@@ -193,6 +193,9 @@ def _build_customer_profile(
 def get_customer_profile(session: Session, user: User, conversation_id: str) -> CustomerProfileData | None:
     conversation = get_conversation_for_user(session, user, conversation_id)
     if conversation is None:
+        return None
+    current_page = get_current_page(session, user)
+    if current_page is not None and conversation.facebook_page_id != current_page.id:
         return None
 
     # M19.5: Check if THIS SPECIFIC conversation was the secondary side of a
@@ -377,7 +380,8 @@ def list_customers(
 
 
 def _get_note_for_user(session: Session, user: User, note_id: str) -> CustomerNote | None:
-    allowed_page_ids = get_user_page_ids(session, user)
+    current_page = get_current_page(session, user)
+    allowed_page_ids = [current_page.id] if current_page is not None else get_user_page_ids(session, user)
     if not allowed_page_ids:
         return None
     try:
@@ -392,6 +396,10 @@ def _get_note_for_user(session: Session, user: User, note_id: str) -> CustomerNo
             CustomerNote.deleted_at.is_(None),
             Conversation.facebook_page_id.in_(allowed_page_ids),
             Conversation.deleted_at.is_(None),
+            or_(
+                CustomerNote.customer_id.is_(None),
+                CustomerNote.customer_id == Conversation.customer_id,
+            ),
         )
         .first()
     )
@@ -400,6 +408,9 @@ def _get_note_for_user(session: Session, user: User, note_id: str) -> CustomerNo
 def create_customer_note(session: Session, user: User, conversation_id: str, content: str) -> CustomerNote | None:
     conversation = get_conversation_for_user(session, user, conversation_id)
     if conversation is None:
+        return None
+    current_page = get_current_page(session, user)
+    if current_page is not None and conversation.facebook_page_id != current_page.id:
         return None
 
     customer_id = resolve_customer_for_conversation(session, conversation)

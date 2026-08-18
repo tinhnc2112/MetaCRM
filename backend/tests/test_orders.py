@@ -14,10 +14,10 @@ from app.db.session import get_db_session
 from app.main import app
 from app.models.auth import User
 from app.models.customer_core import Customer
-from app.models.orders import Order, OrderItem
-from app.models.products import Product
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation
+from app.models.orders import Order, OrderItem
+from app.models.products import Product
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.pages import select_current_page
 from app.utils.jwt import create_access_token
@@ -871,3 +871,74 @@ def test_merge_transfers_orders_to_primary_customer(client: TestClient, session:
 
     order_row = session.query(Order).filter(Order.public_id == UUID(order_uuid)).one()
     assert order_row.customer_id == primary.id
+
+
+def test_customer_order_history_isolated_when_customer_spans_pages(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page_a = _make_page(session, alice, "page-order-history-scope-a")
+    page_b = _make_page(session, alice, "page-order-history-scope-b")
+    customer = _make_customer(session, name="Cross Page Order Customer")
+    conversation_a = _make_conversation(
+        session, page_a, psid="psid-order-history-a", customer_id=customer.id
+    )
+    conversation_b = _make_conversation(
+        session, page_b, psid="psid-order-history-b", customer_id=customer.id
+    )
+    order_a = Order(
+        facebook_page_id=page_a.id,
+        customer_id=customer.id,
+        conversation_id=conversation_a.id,
+        order_number="ORD-HISTORY-A",
+        subtotal_amount=Decimal("11.00"),
+        total_amount=Decimal("11.00"),
+    )
+    order_b = Order(
+        facebook_page_id=page_b.id,
+        customer_id=customer.id,
+        conversation_id=conversation_b.id,
+        order_number="ORD-HISTORY-B",
+        subtotal_amount=Decimal("22.00"),
+        total_amount=Decimal("22.00"),
+    )
+    inconsistent_order = Order(
+        facebook_page_id=page_a.id,
+        customer_id=customer.id,
+        conversation_id=conversation_b.id,
+        order_number="ORD-INCONSISTENT-CONVERSATION",
+        subtotal_amount=Decimal("99.00"),
+        total_amount=Decimal("99.00"),
+    )
+    session.add_all([order_a, order_b, inconsistent_order])
+    session.commit()
+
+    _select_page(session, alice, page_a)
+    page_a_history = client.get(
+        f"/api/v1/facebook/customers/{customer.public_id}/orders", headers=_auth(alice)
+    )
+    page_a_summary = client.get(
+        f"/api/v1/facebook/customers/{customer.public_id}/orders/summary",
+        headers=_auth(alice),
+    )
+    assert page_a_history.status_code == 200
+    assert [item["order_number"] for item in page_a_history.json()["items"]] == [
+        "ORD-HISTORY-A"
+    ]
+    assert page_a_summary.json()["order_count"] == 1
+    assert page_a_summary.json()["total_spend"] == "11.00"
+    assert client.get(
+        f"/api/v1/facebook/orders/{order_b.public_id}", headers=_auth(alice)
+    ).status_code == 404
+    assert client.get(
+        f"/api/v1/facebook/orders/{inconsistent_order.public_id}", headers=_auth(alice)
+    ).status_code == 404
+
+    _select_page(session, alice, page_b)
+    page_b_history = client.get(
+        f"/api/v1/facebook/customers/{customer.public_id}/orders", headers=_auth(alice)
+    )
+    assert page_b_history.status_code == 200
+    assert [item["order_number"] for item in page_b_history.json()["items"]] == [
+        "ORD-HISTORY-B"
+    ]

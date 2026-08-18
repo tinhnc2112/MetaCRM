@@ -17,9 +17,9 @@ from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation, Message
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.pages import select_current_page
-from app.websocket.manager import ConnectionManager
 from app.utils.jwt import create_access_token
 from app.utils.password import hash_password
+from app.websocket.manager import ConnectionManager
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -533,3 +533,104 @@ def test_timeline_ordering_merges_messages_and_notes_newest_first(
     assert [item["type"] for item in timeline] == ["message", "note", "message"]
     assert timeline[0]["preview"] == "New message"
     assert timeline[1]["content"] == "Timeline note"
+
+
+def test_customer_profile_and_mutations_are_isolated_to_current_page(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page_a = _make_page(session, alice, "page-profile-scope-a")
+    page_b = _make_page(session, alice, "page-profile-scope-b")
+    customer = _make_customer(session, name="Shared Historical Customer")
+    conversation_a = _make_conversation(
+        session, page_a, "psid-profile-scope-a", customer_id=customer.id
+    )
+    conversation_b = _make_conversation(
+        session, page_b, "psid-profile-scope-b", customer_id=customer.id
+    )
+    _make_message(session, conversation_a, "mid-profile-scope-a", text="Page A message")
+    _make_message(session, conversation_b, "mid-profile-scope-b", text="Page B message")
+
+    _select_page(session, alice, page_a)
+    note_a = client.post(
+        f"/api/v1/facebook/customers/{conversation_a.uuid}/notes",
+        headers=_auth(alice),
+        json={"content": "Page A note"},
+    )
+    tag_a = client.post(
+        "/api/v1/facebook/customer-tags",
+        headers=_auth(alice),
+        json={"name": "Page A tag"},
+    ).json()
+    assert note_a.status_code == 200
+    assert client.post(
+        f"/api/v1/facebook/customers/{conversation_a.uuid}/tags/{tag_a['id']}",
+        headers=_auth(alice),
+    ).status_code == 200
+
+    _select_page(session, alice, page_b)
+    note_b = client.post(
+        f"/api/v1/facebook/customers/{conversation_b.uuid}/notes",
+        headers=_auth(alice),
+        json={"content": "Page B note"},
+    )
+    tag_b = client.post(
+        "/api/v1/facebook/customer-tags",
+        headers=_auth(alice),
+        json={"name": "Page B tag"},
+    ).json()
+    assert note_b.status_code == 200
+    assert client.post(
+        f"/api/v1/facebook/customers/{conversation_b.uuid}/tags/{tag_b['id']}",
+        headers=_auth(alice),
+    ).status_code == 200
+
+    _select_page(session, alice, page_a)
+    page_a_profile = client.get(
+        f"/api/v1/facebook/customers/{customer.public_id}", headers=_auth(alice)
+    )
+    assert page_a_profile.status_code == 200
+    page_a_body = page_a_profile.json()
+    assert [item["uuid"] for item in page_a_body["conversations"]] == [
+        str(conversation_a.uuid)
+    ]
+    assert [note["content"] for note in page_a_body["notes"]] == ["Page A note"]
+    assert [tag["name"] for tag in page_a_body["tags"]] == ["Page A tag"]
+    timeline_text = [item.get("preview") or item.get("content") for item in page_a_body["timeline"]]
+    assert "Page A message" in timeline_text
+    assert "Page A note" in timeline_text
+    assert "Tag added: Page A tag" in timeline_text
+    assert all("Page B" not in (text or "") for text in timeline_text)
+
+    assert client.get(
+        f"/api/v1/facebook/customers/{conversation_b.uuid}", headers=_auth(alice)
+    ).status_code == 404
+    assert client.post(
+        f"/api/v1/facebook/customers/{conversation_b.uuid}/notes",
+        headers=_auth(alice),
+        json={"content": "Cross-Page write"},
+    ).status_code == 404
+    assert client.patch(
+        f"/api/v1/facebook/customers/notes/{note_b.json()['id']}",
+        headers=_auth(alice),
+        json={"content": "Cross-Page update"},
+    ).status_code == 404
+    assert client.delete(
+        f"/api/v1/facebook/customers/notes/{note_b.json()['id']}", headers=_auth(alice)
+    ).status_code == 404
+    assert client.delete(
+        f"/api/v1/facebook/customers/{conversation_b.uuid}/tags/{tag_b['id']}",
+        headers=_auth(alice),
+    ).status_code == 404
+
+    _select_page(session, alice, page_b)
+    page_b_profile = client.get(
+        f"/api/v1/facebook/customers/{customer.public_id}", headers=_auth(alice)
+    )
+    assert page_b_profile.status_code == 200
+    page_b_body = page_b_profile.json()
+    assert [item["uuid"] for item in page_b_body["conversations"]] == [
+        str(conversation_b.uuid)
+    ]
+    assert [note["content"] for note in page_b_body["notes"]] == ["Page B note"]
+    assert [tag["name"] for tag in page_b_body["tags"]] == ["Page B tag"]

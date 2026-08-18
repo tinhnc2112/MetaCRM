@@ -8,9 +8,15 @@ from uuid import UUID
 
 from app.models.auth import User
 from app.models.customer_core import Customer, CustomerIdentity
-from app.models.customers import CustomerMerge, CustomerNote, CustomerTagAssignment, CustomerTagEvent
-from app.models.orders import Order
+from app.models.customers import (
+    CustomerMerge,
+    CustomerNote,
+    CustomerTag,
+    CustomerTagAssignment,
+    CustomerTagEvent,
+)
 from app.models.messenger import Conversation
+from app.models.orders import Order
 from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.conversations import PaginatedResult
 from app.services.facebook.pages import get_current_page
@@ -32,6 +38,15 @@ class CustomerMergeData:
     merge: CustomerMerge
     primary_customer: Conversation
     secondary_customer: Conversation
+
+
+_CROSS_PAGE_MERGE_ERROR = (
+    "Customer spans multiple Facebook Pages and cannot be merged "
+    "in the current Page context."
+)
+_INCONSISTENT_PAGE_DATA_ERROR = (
+    "Customer data has inconsistent Facebook Page ownership and cannot be merged."
+)
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -295,6 +310,87 @@ def _get_merge_by_conversation_pair(
     )
 
 
+def _customer_page_ids(session: Session, customer_id: int) -> set[int]:
+    """Collect trusted Page ownership and reject inconsistent derived records."""
+    page_ids = {
+        page_id
+        for (page_id,) in session.query(CustomerIdentity.facebook_page_id)
+        .filter(CustomerIdentity.customer_id == customer_id)
+        .all()
+    }
+    page_ids.update(
+        page_id
+        for (page_id,) in session.query(Conversation.facebook_page_id)
+        .filter(Conversation.customer_id == customer_id)
+        .all()
+    )
+
+    orders = session.query(Order).filter(Order.customer_id == customer_id).all()
+    for order in orders:
+        page_ids.add(order.facebook_page_id)
+        if order.conversation_id is None:
+            continue
+        conversation = session.get(Conversation, order.conversation_id)
+        if (
+            conversation is None
+            or conversation.customer_id != customer_id
+            or conversation.facebook_page_id != order.facebook_page_id
+        ):
+            raise ValueError(_INCONSISTENT_PAGE_DATA_ERROR)
+
+    for _note, conversation in (
+        session.query(CustomerNote, Conversation)
+        .join(Conversation, Conversation.id == CustomerNote.conversation_id)
+        .filter(CustomerNote.customer_id == customer_id)
+        .all()
+    ):
+        if conversation.customer_id != customer_id:
+            raise ValueError(_INCONSISTENT_PAGE_DATA_ERROR)
+        page_ids.add(conversation.facebook_page_id)
+
+    for _assignment, conversation, tag in (
+        session.query(CustomerTagAssignment, Conversation, CustomerTag)
+        .join(Conversation, Conversation.id == CustomerTagAssignment.conversation_id)
+        .join(CustomerTag, CustomerTag.id == CustomerTagAssignment.tag_id)
+        .filter(CustomerTagAssignment.customer_id == customer_id)
+        .all()
+    ):
+        if (
+            conversation.customer_id != customer_id
+            or tag.facebook_page_id != conversation.facebook_page_id
+        ):
+            raise ValueError(_INCONSISTENT_PAGE_DATA_ERROR)
+        page_ids.add(conversation.facebook_page_id)
+
+    for event, conversation, tag in (
+        session.query(CustomerTagEvent, Conversation, CustomerTag)
+        .join(Conversation, Conversation.id == CustomerTagEvent.conversation_id)
+        .outerjoin(CustomerTag, CustomerTag.id == CustomerTagEvent.tag_id)
+        .filter(CustomerTagEvent.customer_id == customer_id)
+        .all()
+    ):
+        if conversation.customer_id != customer_id or (
+            event.tag_id is not None
+            and (tag is None or tag.facebook_page_id != conversation.facebook_page_id)
+        ):
+            raise ValueError(_INCONSISTENT_PAGE_DATA_ERROR)
+        page_ids.add(conversation.facebook_page_id)
+
+    return page_ids
+
+
+def _validate_merge_page_boundary(
+    session: Session,
+    *,
+    current_page_id: int,
+    primary_customer_id: int,
+    secondary_customer_id: int,
+) -> None:
+    for customer_id in (primary_customer_id, secondary_customer_id):
+        if _customer_page_ids(session, customer_id) - {current_page_id}:
+            raise ValueError(_CROSS_PAGE_MERGE_ERROR)
+
+
 def merge_customers(
     session: Session,
     user: User,
@@ -306,7 +402,7 @@ def merge_customers(
     Conversation", docs/03_CUSTOMER.md).
 
     The API/UI still identify the two sides by Conversation UUID (unchanged
-    contract), but the actual merge atomically transfers every
+    contract), but the actual merge atomically transfers current-Page
     CustomerIdentity, Conversation, CustomerNote and CustomerTagAssignment
     that belongs to the secondary Customer onto the primary Customer. Both
     conversations remain independently accessible afterwards; only their
@@ -386,6 +482,13 @@ def merge_customers(
         # Pair already merged before; return the existing record
         return CustomerMergeData(merge=existing_merge, primary_customer=primary, secondary_customer=secondary)
 
+    _validate_merge_page_boundary(
+        session,
+        current_page_id=page_obj.id,
+        primary_customer_id=primary_customer.id,
+        secondary_customer_id=secondary_customer.id,
+    )
+
     duplicate_info = _duplicate_signals(primary, secondary)
     if duplicate_info is None:
         raise ValueError("Selected customers do not have enough duplicate signals to merge safely")
@@ -397,37 +500,62 @@ def merge_customers(
 
     for identity in (
         session.query(CustomerIdentity)
-        .filter(CustomerIdentity.customer_id == secondary_customer.id)
+        .filter(
+            CustomerIdentity.customer_id == secondary_customer.id,
+            CustomerIdentity.facebook_page_id == page_obj.id,
+        )
         .all()
     ):
         identity.customer_id = primary_customer.id
         session.add(identity)
 
-    for conversation in (
-        session.query(Conversation)
-        .filter(Conversation.customer_id == secondary_customer.id)
+    for note in (
+        session.query(CustomerNote)
+        .join(Conversation, Conversation.id == CustomerNote.conversation_id)
+        .filter(
+            CustomerNote.customer_id == secondary_customer.id,
+            Conversation.customer_id == secondary_customer.id,
+            Conversation.facebook_page_id == page_obj.id,
+        )
         .all()
     ):
-        conversation.customer_id = primary_customer.id
-        session.add(conversation)
-
-    for note in session.query(CustomerNote).filter(CustomerNote.customer_id == secondary_customer.id).all():
         note.customer_id = primary_customer.id
         session.add(note)
 
-    for order in session.query(Order).filter(Order.customer_id == secondary_customer.id).all():
+    for order in (
+        session.query(Order)
+        .filter(
+            Order.customer_id == secondary_customer.id,
+            Order.facebook_page_id == page_obj.id,
+        )
+        .all()
+    ):
         order.customer_id = primary_customer.id
         session.add(order)
 
     primary_tag_ids = {
         row[0]
         for row in session.query(CustomerTagAssignment.tag_id)
-        .filter(CustomerTagAssignment.customer_id == primary_customer.id)
+        .join(Conversation, Conversation.id == CustomerTagAssignment.conversation_id)
+        .join(CustomerTag, CustomerTag.id == CustomerTagAssignment.tag_id)
+        .filter(
+            CustomerTagAssignment.customer_id == primary_customer.id,
+            Conversation.customer_id == primary_customer.id,
+            Conversation.facebook_page_id == page_obj.id,
+            CustomerTag.facebook_page_id == page_obj.id,
+        )
         .all()
     }
     for assignment in (
         session.query(CustomerTagAssignment)
-        .filter(CustomerTagAssignment.customer_id == secondary_customer.id)
+        .join(Conversation, Conversation.id == CustomerTagAssignment.conversation_id)
+        .join(CustomerTag, CustomerTag.id == CustomerTagAssignment.tag_id)
+        .filter(
+            CustomerTagAssignment.customer_id == secondary_customer.id,
+            Conversation.customer_id == secondary_customer.id,
+            Conversation.facebook_page_id == page_obj.id,
+            CustomerTag.facebook_page_id == page_obj.id,
+        )
         .all()
     ):
         if assignment.tag_id in primary_tag_ids:
@@ -439,11 +567,30 @@ def merge_customers(
 
     for event in (
         session.query(CustomerTagEvent)
-        .filter(CustomerTagEvent.customer_id == secondary_customer.id)
+        .join(Conversation, Conversation.id == CustomerTagEvent.conversation_id)
+        .outerjoin(CustomerTag, CustomerTag.id == CustomerTagEvent.tag_id)
+        .filter(
+            CustomerTagEvent.customer_id == secondary_customer.id,
+            Conversation.customer_id == secondary_customer.id,
+            Conversation.facebook_page_id == page_obj.id,
+        )
         .all()
     ):
         event.customer_id = primary_customer.id
         session.add(event)
+
+    # Derived resources above must be selected while Conversations still
+    # identify their original Customer. Move the Conversations last.
+    for conversation in (
+        session.query(Conversation)
+        .filter(
+            Conversation.customer_id == secondary_customer.id,
+            Conversation.facebook_page_id == page_obj.id,
+        )
+        .all()
+    ):
+        conversation.customer_id = primary_customer.id
+        session.add(conversation)
 
     if primary_customer.name is None and secondary_customer.name is not None:
         primary_customer.name = secondary_customer.name
