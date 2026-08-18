@@ -24,6 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 if TYPE_CHECKING:
     from app.models.facebook import FacebookPage
+    from app.models.inventory import ProductInventory, StockMovement
     from app.models.orders import OrderItem
 
 
@@ -50,6 +51,9 @@ class Product(Base):
     sale_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    track_inventory: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -60,3 +64,7 @@ class Product(Base):
 
     page: Mapped[FacebookPage] = relationship()
     order_items: Mapped[list[OrderItem]] = relationship(back_populates="product")
+    inventory: Mapped[ProductInventory | None] = relationship(
+        back_populates="product", uselist=False
+    )
+    stock_movements: Mapped[list[StockMovement]] = relationship(back_populates="product")

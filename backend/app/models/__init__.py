@@ -1,19 +1,20 @@
 """SQLAlchemy model package. Import models here for Alembic discovery."""
 
 from app.db.base import Base
+from app.models.auth import Role, User, user_roles
 from app.models.base import AuditMixin, BaseModel, SoftDeleteMixin, UTCDateTimeMixin, UUIDMixin
 from app.models.customer_core import Customer, CustomerIdentity
 from app.models.customers import (
-    CustomerNote,
     CustomerMerge,
+    CustomerNote,
     CustomerSegment,
     CustomerSegmentRule,
     CustomerTag,
     CustomerTagAssignment,
     CustomerTagEvent,
 )
-from app.models.auth import Role, User, user_roles
 from app.models.facebook import FacebookAccount, FacebookOAuthState, FacebookPage, UserPageContext
+from app.models.inventory import ProductInventory, StockMovement
 from app.models.messenger import Conversation, Message
 from app.models.orders import Order, OrderItem
 from app.models.products import Product
@@ -36,10 +37,12 @@ __all__ = [
     "FacebookOAuthState",
     "FacebookPage",
     "Message",
+    "ProductInventory",
     "Order",
     "OrderItem",
     "Product",
     "Role",
+    "StockMovement",
     "SoftDeleteMixin",
     "UTCDateTimeMixin",
     "UUIDMixin",

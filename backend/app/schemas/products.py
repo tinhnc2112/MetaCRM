@@ -99,6 +99,7 @@ class ProductListItem(BaseModel):
     sale_price: str
     description: str | None = None
     is_active: bool
+    track_inventory: bool
     created_at: datetime
     updated_at: datetime
 

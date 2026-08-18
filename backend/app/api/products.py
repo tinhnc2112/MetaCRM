@@ -43,6 +43,7 @@ def _serialize_product(product) -> ProductResponse:
         sale_price=_money(product.sale_price),
         description=product.description,
         is_active=product.is_active,
+        track_inventory=product.track_inventory,
         created_at=product.created_at,
         updated_at=product.updated_at,
     )
