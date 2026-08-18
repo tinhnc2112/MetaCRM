@@ -15,6 +15,7 @@ from app.models.customers import (
 from app.models.auth import Role, User, user_roles
 from app.models.facebook import FacebookAccount, FacebookOAuthState, FacebookPage, UserPageContext
 from app.models.messenger import Conversation, Message
+from app.models.orders import Order, OrderItem
 
 __all__ = [
     "AuditMixin",
@@ -34,6 +35,8 @@ __all__ = [
     "FacebookOAuthState",
     "FacebookPage",
     "Message",
+    "Order",
+    "OrderItem",
     "Role",
     "SoftDeleteMixin",
     "UTCDateTimeMixin",

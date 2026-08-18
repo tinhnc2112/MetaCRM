@@ -9,6 +9,7 @@ from uuid import UUID
 from app.models.auth import User
 from app.models.customer_core import Customer, CustomerIdentity
 from app.models.customers import CustomerMerge, CustomerNote, CustomerTagAssignment, CustomerTagEvent
+from app.models.orders import Order
 from app.models.messenger import Conversation
 from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.conversations import PaginatedResult
@@ -413,6 +414,10 @@ def merge_customers(
     for note in session.query(CustomerNote).filter(CustomerNote.customer_id == secondary_customer.id).all():
         note.customer_id = primary_customer.id
         session.add(note)
+
+    for order in session.query(Order).filter(Order.customer_id == secondary_customer.id).all():
+        order.customer_id = primary_customer.id
+        session.add(order)
 
     primary_tag_ids = {
         row[0]

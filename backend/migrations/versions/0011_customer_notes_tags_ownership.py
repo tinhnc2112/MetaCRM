@@ -146,48 +146,56 @@ def _propagate_customer_id(bind, table: str) -> None:
     )
 
 
+def _has_column(bind, table: str, column: str) -> bool:
+    inspector = sa.inspect(bind)
+    return any(col["name"] == column for col in inspector.get_columns(table))
+
+
 def upgrade() -> None:
-    op.add_column("customer_notes", sa.Column("customer_id", sa.Integer(), nullable=True))
-    op.create_index("ix_customer_notes_customer_id", "customer_notes", ["customer_id"])
-    op.create_foreign_key(
-        "fk_customer_notes_customer_id",
-        "customer_notes",
-        "customers",
-        ["customer_id"],
-        ["id"],
-        ondelete="CASCADE",
-    )
-
-    op.add_column("customer_tag_assignments", sa.Column("customer_id", sa.Integer(), nullable=True))
-    op.create_index(
-        "ix_customer_tag_assignments_customer_id", "customer_tag_assignments", ["customer_id"]
-    )
-    op.create_foreign_key(
-        "fk_customer_tag_assignments_customer_id",
-        "customer_tag_assignments",
-        "customers",
-        ["customer_id"],
-        ["id"],
-        ondelete="CASCADE",
-    )
-    op.create_unique_constraint(
-        "uq_customer_tag_assignments_customer_tag",
-        "customer_tag_assignments",
-        ["customer_id", "tag_id"],
-    )
-
-    op.add_column("customer_tag_events", sa.Column("customer_id", sa.Integer(), nullable=True))
-    op.create_index("ix_customer_tag_events_customer_id", "customer_tag_events", ["customer_id"])
-    op.create_foreign_key(
-        "fk_customer_tag_events_customer_id",
-        "customer_tag_events",
-        "customers",
-        ["customer_id"],
-        ["id"],
-        ondelete="CASCADE",
-    )
-
     bind = op.get_bind()
+    if not _has_column(bind, "customer_notes", "customer_id"):
+        op.add_column("customer_notes", sa.Column("customer_id", sa.Integer(), nullable=True))
+        op.create_index("ix_customer_notes_customer_id", "customer_notes", ["customer_id"])
+        op.create_foreign_key(
+            "fk_customer_notes_customer_id",
+            "customer_notes",
+            "customers",
+            ["customer_id"],
+            ["id"],
+            ondelete="CASCADE",
+        )
+
+    if not _has_column(bind, "customer_tag_assignments", "customer_id"):
+        op.add_column("customer_tag_assignments", sa.Column("customer_id", sa.Integer(), nullable=True))
+        op.create_index(
+            "ix_customer_tag_assignments_customer_id", "customer_tag_assignments", ["customer_id"]
+        )
+        op.create_foreign_key(
+            "fk_customer_tag_assignments_customer_id",
+            "customer_tag_assignments",
+            "customers",
+            ["customer_id"],
+            ["id"],
+            ondelete="CASCADE",
+        )
+        op.create_unique_constraint(
+            "uq_customer_tag_assignments_customer_tag",
+            "customer_tag_assignments",
+            ["customer_id", "tag_id"],
+        )
+
+    if not _has_column(bind, "customer_tag_events", "customer_id"):
+        op.add_column("customer_tag_events", sa.Column("customer_id", sa.Integer(), nullable=True))
+        op.create_index("ix_customer_tag_events_customer_id", "customer_tag_events", ["customer_id"])
+        op.create_foreign_key(
+            "fk_customer_tag_events_customer_id",
+            "customer_tag_events",
+            "customers",
+            ["customer_id"],
+            ["id"],
+            ondelete="CASCADE",
+        )
+
     _backfill_orphan_conversations(bind)
     _propagate_customer_id(bind, "customer_notes")
     _propagate_customer_id(bind, "customer_tag_assignments")
