@@ -399,6 +399,7 @@ export function MessengerInboxPage() {
 
           <CustomerProfilePanel
             profile={customerProfile}
+            currentPageId={currentPageId}
             pageTags={pageTags}
             loading={customerProfileQuery.isLoading}
             error={customerProfileQuery.isError}

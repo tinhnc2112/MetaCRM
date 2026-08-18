@@ -333,6 +333,7 @@ export function CustomerBrowserPage() {
           ) : displayProfile ? (
             <CustomerProfilePanel
               profile={displayProfile}
+              currentPageId={currentPageId}
               pageTags={pageTagsQuery.data?.items ?? []}
               loading={selectedCustomerQuery.isLoading}
               error={selectedCustomerQuery.isError}

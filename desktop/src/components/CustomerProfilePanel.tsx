@@ -3,22 +3,35 @@ import {
   EditOutlined,
   FileTextOutlined,
   MessageOutlined,
+  ShoppingCartOutlined,
   SwapOutlined,
   SaveOutlined,
   TeamOutlined,
   TagOutlined
 } from "@ant-design/icons";
-import { Avatar, Badge, Button, Empty, Input, List, Select, Space, Spin, Tag, Typography } from "antd";
+import { useQuery } from "@tanstack/react-query";
+import { Alert, Avatar, Badge, Button, Empty, Input, List, Pagination, Select, Space, Spin, Statistic, Tag, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
+import { listCustomerOrders } from "../services/orderService";
 import type {
   CustomerProfileResponse,
   CustomerNoteSaveRequest,
   CustomerTag
 } from "../types/customer";
+import type { OrderListItem, OrderStatus } from "../types/order";
+
+const ORDER_PAGE_SIZE = 5;
+const ORDER_STATUS_OPTIONS: Array<{ label: string; value: "all" | OrderStatus }> = [
+  { label: "All", value: "all" },
+  { label: "Draft", value: "draft" },
+  { label: "Confirmed", value: "confirmed" },
+  { label: "Cancelled", value: "cancelled" }
+];
 
 type CustomerProfilePanelProps = {
   profile: CustomerProfileResponse | null;
+  currentPageId: string | null;
   pageTags: CustomerTag[];
   loading: boolean;
   error: boolean;
@@ -36,6 +49,7 @@ type CustomerProfilePanelProps = {
 
 export function CustomerProfilePanel({
   profile,
+  currentPageId,
   pageTags,
   loading,
   error,
@@ -53,6 +67,8 @@ export function CustomerProfilePanel({
   const [noteId, setNoteId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
+  const [orderPage, setOrderPage] = useState(1);
+  const [orderStatus, setOrderStatus] = useState<"all" | OrderStatus>("all");
 
   const conversation = profile?.conversation ?? null;
   const customer = profile?.customer ?? null;
@@ -87,6 +103,23 @@ export function CustomerProfilePanel({
   const customerUuid = customer?.uuid ?? null;
   const customerPhone = customer?.phone ?? null;
   const customerEmail = customer?.email ?? null;
+  const orderStatusParam = orderStatus === "all" ? undefined : orderStatus;
+
+  useEffect(() => {
+    setOrderPage(1);
+    setOrderStatus("all");
+  }, [currentPageId, customerUuid]);
+
+  const ordersQuery = useQuery({
+    queryKey: ["customer-orders", currentPageId, customerUuid, orderPage, ORDER_PAGE_SIZE, orderStatusParam ?? "all"],
+    queryFn: () =>
+      listCustomerOrders(customerUuid as string, {
+        page: orderPage,
+        pageSize: ORDER_PAGE_SIZE,
+        status: orderStatusParam
+      }),
+    enabled: Boolean(currentPageId && customerUuid)
+  });
 
   const availableTags = useMemo(() => {
     const assignedTagIds = new Set(assignedTags.map((tag) => tag.id));
@@ -258,6 +291,45 @@ export function CustomerProfilePanel({
 
       <section className="messenger-profile-section">
         <div className="messenger-profile-section-header">
+          <Typography.Title level={5}>Orders</Typography.Title>
+          <Select
+            size="small"
+            value={orderStatus}
+            options={ORDER_STATUS_OPTIONS}
+            onChange={(value) => {
+              setOrderStatus(value);
+              setOrderPage(1);
+            }}
+            disabled={!customerUuid || ordersQuery.isLoading}
+            aria-label="Filter customer orders by status"
+          />
+        </div>
+
+        {!customerUuid ? (
+          <Empty description="Order history is unavailable until this profile has a customer UUID" />
+        ) : ordersQuery.isLoading ? (
+          <div className="messenger-profile-inline-loading">
+            <Spin size="small" />
+          </div>
+        ) : ordersQuery.isError ? (
+          <Alert type="error" showIcon message="Could not load order history." />
+        ) : (ordersQuery.data?.items ?? []).length === 0 ? (
+          <Empty description={orderStatus === "all" ? "No orders yet" : `No ${orderStatus} orders found`} />
+        ) : (
+          <CustomerOrdersList
+            orders={ordersQuery.data?.items ?? []}
+            total={ordersQuery.data?.meta.total ?? 0}
+            page={ordersQuery.data?.meta.page ?? orderPage}
+            pageSize={ordersQuery.data?.meta.page_size ?? ORDER_PAGE_SIZE}
+            loading={ordersQuery.isFetching}
+            onPageChange={setOrderPage}
+            onOpenConversation={onOpenConversation}
+          />
+        )}
+      </section>
+
+      <section className="messenger-profile-section">
+        <div className="messenger-profile-section-header">
           <Typography.Title level={5}>Tags</Typography.Title>
           <Button size="small" onClick={onManageTags}>
             Manage tags
@@ -414,10 +486,147 @@ export function CustomerProfilePanel({
   );
 }
 
+function CustomerOrdersList({
+  orders,
+  total,
+  page,
+  pageSize,
+  loading,
+  onPageChange,
+  onOpenConversation
+}: {
+  orders: OrderListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  loading: boolean;
+  onPageChange: (page: number) => void;
+  onOpenConversation?: (conversationId: string) => void;
+}) {
+  const totalShown = orders.reduce((sum, order) => sum + parseMoney(order.total_amount), 0);
+  const latestShown = orders
+    .map((order) => new Date(order.created_at))
+    .filter((date) => !Number.isNaN(date.getTime()))
+    .sort((left, right) => right.getTime() - left.getTime())[0];
+  const currency = orders[0]?.currency ?? "";
+
+  return (
+    <div className="customer-orders">
+      <div className="customer-orders-summary">
+        <Statistic title="Orders shown" value={orders.length} />
+        <Statistic title="Total shown" value={formatMoney(totalShown, currency)} />
+        <Statistic title="Latest shown" value={latestShown ? latestShown.toLocaleDateString() : "Unknown"} />
+      </div>
+
+      <List
+        dataSource={orders}
+        loading={loading}
+        renderItem={(order) => (
+          <List.Item className="customer-order-item">
+            <article className="customer-order-card">
+              <div className="customer-order-card-header">
+                <div>
+                  <Typography.Text strong>{order.order_number || "Order #"}</Typography.Text>
+                  <div className="customer-order-date">{formatTimestamp(order.created_at)}</div>
+                </div>
+                <Tag color={getOrderStatusColor(order.status)} icon={<ShoppingCartOutlined />}>
+                  {labelize(order.status)}
+                </Tag>
+              </div>
+
+              <div className="customer-order-grid">
+                <OrderField label="Payment" value={labelize(order.payment_status)} />
+                <OrderField label="Shipping" value={labelize(order.shipping_status)} />
+                <OrderField label="Total" value={`${safeText(order.total_amount)} ${safeText(order.currency)}`.trim()} />
+                <OrderField label="Items" value="Not included in summary" />
+              </div>
+
+              {order.note ? (
+                <Typography.Paragraph className="customer-order-note" ellipsis={{ rows: 2 }}>
+                  {order.note}
+                </Typography.Paragraph>
+              ) : null}
+
+              {order.conversation_uuid && onOpenConversation ? (
+                <Button size="small" type="link" onClick={() => onOpenConversation(order.conversation_uuid as string)}>
+                  Open conversation
+                </Button>
+              ) : null}
+            </article>
+          </List.Item>
+        )}
+      />
+
+      <div className="customer-orders-pagination">
+        <Pagination
+          size="small"
+          current={page}
+          pageSize={pageSize}
+          total={total}
+          onChange={onPageChange}
+          showSizeChanger={false}
+          disabled={loading}
+        />
+      </div>
+    </div>
+  );
+}
+
+function OrderField({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span className="messenger-profile-label">{label}</span>
+      <Typography.Text>{safeText(value)}</Typography.Text>
+    </div>
+  );
+}
+
 function formatTimestamp(value: string | null): string {
   if (!value) {
     return "Unknown time";
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function parseMoney(value: string | number | null): number {
+  if (value === null) {
+    return 0;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatMoney(value: number, currency: string): string {
+  const amount = Number.isFinite(value)
+    ? value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : "0.00";
+  return `${amount} ${currency}`.trim();
+}
+
+function safeText(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === "") {
+    return "Unavailable";
+  }
+  return String(value);
+}
+
+function labelize(value: string | null | undefined): string {
+  if (!value) {
+    return "Unavailable";
+  }
+  return value
+    .split("_")
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function getOrderStatusColor(status: OrderStatus): string {
+  if (status === "confirmed") {
+    return "green";
+  }
+  if (status === "cancelled") {
+    return "red";
+  }
+  return "blue";
 }
