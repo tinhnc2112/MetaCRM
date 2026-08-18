@@ -110,27 +110,30 @@ def list_orders_endpoint(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Facebook page is not selected")
 
     result = None
-    if customer_uuid is not None:
-        result = get_customer_orders(
-            session,
-            current_user,
-            customer_uuid,
-            page=page,
-            page_size=page_size,
-            status=status_filter,
-            q=q,
-        )
-        if result is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
-    else:
-        result = list_orders(
-            session,
-            current_user,
-            page=page,
-            page_size=page_size,
-            status=status_filter,
-            q=q,
-        )
+    try:
+        if customer_uuid is not None:
+            result = get_customer_orders(
+                session,
+                current_user,
+                customer_uuid,
+                page=page,
+                page_size=page_size,
+                status=status_filter,
+                q=q,
+            )
+            if result is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+        else:
+            result = list_orders(
+                session,
+                current_user,
+                page=page,
+                page_size=page_size,
+                status=status_filter,
+                q=q,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     return OrderListResponse(
         items=[_serialize_order_list_item(order) for order in result.items],
@@ -226,15 +229,18 @@ def customer_order_history_endpoint(
     if get_current_page(session, current_user) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Facebook page is not selected")
 
-    result = get_customer_orders(
-        session,
-        current_user,
-        customer_uuid,
-        page=page,
-        page_size=page_size,
-        status=status_filter,
-        q=q,
-    )
+    try:
+        result = get_customer_orders(
+            session,
+            current_user,
+            customer_uuid,
+            page=page,
+            page_size=page_size,
+            status=status_filter,
+            q=q,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
 

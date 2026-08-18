@@ -193,10 +193,12 @@ def test_create_order_calculates_totals_and_snapshots(client: TestClient, sessio
     )
     conversation = _make_conversation(session, page, psid="psid-order-create", customer_id=customer.id)
 
+    payload = _order_payload(str(customer.public_id), conversation_uuid=str(conversation.uuid))
+    payload["total_amount"] = 1.0
     response = client.post(
         "/api/v1/facebook/orders",
         headers=_auth(alice),
-        json=_order_payload(str(customer.public_id), conversation_uuid=str(conversation.uuid)),
+        json=payload,
     )
 
     assert response.status_code == 200
@@ -213,9 +215,16 @@ def test_create_order_calculates_totals_and_snapshots(client: TestClient, sessio
     assert body["total_amount"] == "27.00"
     assert body["shipping_address"] == "123 Test Street"
     assert body["note"] == "Call before delivery"
+    assert "id" not in body
+    assert "customer_id" not in body
+    assert "facebook_page_id" not in body
+    assert "conversation_id" not in body
+    assert "created_by_id" not in body
     assert len(body["items"]) == 2
     assert body["items"][0]["line_total"] == "21.00"
     assert body["items"][1]["line_total"] == "5.00"
+    assert "id" not in body["items"][0]
+    assert "order_id" not in body["items"][0]
 
     order_row = session.query(Order).filter(Order.public_id == UUID(body["uuid"])).one()
     assert order_row.customer_id == customer.id
@@ -343,6 +352,26 @@ def test_customer_order_history_endpoint(client: TestClient, session: Session) -
     assert body["items"][0]["customer_uuid"] == str(customer.public_id)
 
 
+def test_invalid_status_filters_return_422(client: TestClient, session: Session) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-invalid-status")
+    _select_page(session, alice, page)
+    customer = _make_customer(session, name="Invalid Status Customer", email="invalid-status@example.com")
+    _make_conversation(session, page, psid="psid-order-invalid-status", customer_id=customer.id)
+
+    list_response = client.get(
+        "/api/v1/facebook/orders?status=unknown",
+        headers=_auth(alice),
+    )
+    assert list_response.status_code == 422
+
+    history_response = client.get(
+        f"/api/v1/facebook/customers/{customer.public_id}/orders?status=unknown",
+        headers=_auth(alice),
+    )
+    assert history_response.status_code == 422
+
+
 def test_invalid_uuid_handling_returns_404(client: TestClient, session: Session) -> None:
     alice, _ = _get_users(session)
     page = _make_page(session, alice, "page-order-invalid")
@@ -383,6 +412,75 @@ def test_update_order_status_payment_shipping_and_note(client: TestClient, sessi
     assert body["payment_status"] == "paid"
     assert body["shipping_status"] == "packed"
     assert body["note"] == "Ready to ship"
+
+
+def test_update_order_recalculates_totals_and_rejects_negative_total(
+    client: TestClient,
+    session: Session,
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-update-totals")
+    _select_page(session, alice, page)
+    customer = _make_customer(session, name="Update Totals Customer", email="update-totals@example.com")
+    _make_conversation(session, page, psid="psid-order-update-totals", customer_id=customer.id)
+
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json=_order_payload(str(customer.public_id)),
+    )
+    assert created.status_code == 200
+    order_uuid = created.json()["uuid"]
+
+    updated = client.patch(
+        f"/api/v1/facebook/orders/{order_uuid}",
+        headers=_auth(alice),
+        json={"discount_amount": 5.0, "shipping_fee": 1.0},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["subtotal_amount"] == "26.00"
+    assert updated.json()["discount_amount"] == "5.00"
+    assert updated.json()["shipping_fee"] == "1.00"
+    assert updated.json()["total_amount"] == "22.00"
+
+    rejected = client.patch(
+        f"/api/v1/facebook/orders/{order_uuid}",
+        headers=_auth(alice),
+        json={"discount_amount": 999.0},
+    )
+    assert rejected.status_code == 422
+
+
+def test_cancelled_order_cannot_be_reopened(client: TestClient, session: Session) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-cancelled")
+    _select_page(session, alice, page)
+    customer = _make_customer(session, name="Cancelled Customer", email="cancelled@example.com")
+    _make_conversation(session, page, psid="psid-order-cancelled", customer_id=customer.id)
+
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json=_order_payload(str(customer.public_id)),
+    )
+    assert created.status_code == 200
+    order_uuid = created.json()["uuid"]
+
+    cancelled = client.patch(
+        f"/api/v1/facebook/orders/{order_uuid}",
+        headers=_auth(alice),
+        json={"status": "cancelled"},
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["cancelled_at"] is not None
+
+    reopened = client.patch(
+        f"/api/v1/facebook/orders/{order_uuid}",
+        headers=_auth(alice),
+        json={"status": "confirmed"},
+    )
+    assert reopened.status_code == 422
 
 
 def test_invalid_totals_are_rejected(client: TestClient, session: Session) -> None:

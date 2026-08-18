@@ -313,8 +313,11 @@ def update_order(
         return None
 
     if "status" in data and data["status"] is not None:
-        order.status = _validate_status(str(data["status"]), ORDER_STATUSES, "status")
-        if order.status == "cancelled" and order.cancelled_at is None:
+        next_status = _validate_status(str(data["status"]), ORDER_STATUSES, "status")
+        if order.status == "cancelled" and next_status != "cancelled":
+            raise ValueError("cancelled orders cannot be reopened")
+        order.status = next_status
+        if next_status == "cancelled" and order.cancelled_at is None:
             order.cancelled_at = datetime.now(UTC)
     if "payment_status" in data and data["payment_status"] is not None:
         order.payment_status = _validate_status(
