@@ -1204,6 +1204,67 @@ body {
   margin-bottom: 0;
 }
 
+.product-inventory-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 4px;
+}
+
+.inventory-loading {
+  min-height: 160px;
+  display: grid;
+  place-items: center;
+}
+
+.inventory-summary .ant-descriptions-item-label {
+  width: 150px;
+}
+
+.inventory-action-card,
+.inventory-history {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.inventory-action-card h5,
+.inventory-history h5 {
+  margin: 0 0 2px;
+}
+
+.inventory-action-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.inventory-form-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.6fr) minmax(280px, 1.4fr);
+  gap: 12px;
+}
+
+.inventory-note-field {
+  min-width: 0;
+}
+
+.inventory-history {
+  background: #ffffff;
+}
+
+.inventory-history-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 @media (max-width: 1200px) {
   body {
     min-width: 0;
@@ -1229,5 +1290,15 @@ body {
 
   .product-management-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .inventory-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .inventory-action-heading,
+  .inventory-history-pagination {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

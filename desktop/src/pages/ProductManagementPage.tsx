@@ -1,4 +1,5 @@
 import {
+  DatabaseOutlined,
   DeleteOutlined,
   EditOutlined,
   PlusOutlined,
@@ -25,6 +26,7 @@ import {
 import type { TableColumnsType } from "antd";
 import { useEffect, useRef, useState } from "react";
 
+import { ProductInventoryModal } from "../components/ProductInventoryModal";
 import { getCurrentFacebookPage } from "../services/facebookService";
 import {
   archiveProduct,
@@ -68,6 +70,11 @@ type ArchiveVariables = {
   product: ProductListItem;
 };
 
+type InventorySelection = {
+  pageId: string;
+  product: ProductListItem;
+};
+
 export function ProductManagementPage() {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
@@ -80,6 +87,7 @@ export function ProductManagementPage() {
   const [draft, setDraft] = useState<ProductDraft>(createEmptyDraft());
   const [formError, setFormError] = useState<string | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<ProductListItem | null>(null);
+  const [inventorySelection, setInventorySelection] = useState<InventorySelection | null>(null);
 
   const currentPageQuery = useQuery({
     queryKey: ["facebook-current-page"],
@@ -111,6 +119,7 @@ export function ProductManagementPage() {
     setDraft(createEmptyDraft());
     setFormError(null);
     setArchiveTarget(null);
+    setInventorySelection(null);
   }, [currentPageId]);
 
   const createMutation = useMutation({
@@ -274,6 +283,17 @@ export function ProductManagementPage() {
       )
     },
     {
+      title: "Inventory",
+      dataIndex: "track_inventory",
+      key: "track_inventory",
+      width: 130,
+      render: (trackInventory: boolean) => (
+        <Tag color={trackInventory ? "success" : "default"}>
+          {trackInventory ? "Tracked" : "Not tracked"}
+        </Tag>
+      )
+    },
+    {
       title: "Updated",
       dataIndex: "updated_at",
       key: "updated_at",
@@ -283,9 +303,19 @@ export function ProductManagementPage() {
     {
       title: "Actions",
       key: "actions",
-      width: 210,
+      width: 340,
       render: (_, product) => (
-        <Space>
+        <Space wrap>
+          <Button
+            icon={<DatabaseOutlined />}
+            onClick={() => {
+              if (currentPageId) {
+                setInventorySelection({ pageId: currentPageId, product });
+              }
+            }}
+          >
+            Inventory
+          </Button>
           <Button icon={<EditOutlined />} onClick={() => openEdit(product)}>
             Edit
           </Button>
@@ -548,6 +578,15 @@ export function ProductManagementPage() {
           The product will be hidden from normal product lists. Existing order history and item snapshots will remain unchanged.
         </Typography.Paragraph>
       </Modal>
+
+      <ProductInventoryModal
+        product={inventorySelection?.product ?? null}
+        currentPageId={inventorySelection?.pageId ?? null}
+        open={
+          inventorySelection !== null && inventorySelection.pageId === currentPageId
+        }
+        onClose={() => setInventorySelection(null)}
+      />
     </div>
   );
 }

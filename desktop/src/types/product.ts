@@ -8,6 +8,7 @@ export type Product = {
   sale_price: string;
   description: string | null;
   is_active: boolean;
+  track_inventory: boolean;
   created_at: string;
   updated_at: string;
 };
