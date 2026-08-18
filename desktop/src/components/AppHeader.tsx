@@ -33,6 +33,9 @@ function getHeaderTitle(pathname: string): string {
   if (pathname.startsWith("/messenger")) {
     return "Messenger Inbox";
   }
+  if (pathname.startsWith("/products")) {
+    return "Products";
+  }
   if (pathname.startsWith("/settings/facebook")) {
     return "Facebook Settings";
   }

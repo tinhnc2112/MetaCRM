@@ -3,6 +3,7 @@ import {
   FacebookOutlined,
   FilterOutlined,
   MessageOutlined,
+  ShoppingOutlined,
   SettingOutlined,
   TeamOutlined,
   UserSwitchOutlined
@@ -42,6 +43,11 @@ export function AppSidebar() {
             key: "/messenger",
             icon: <MessageOutlined />,
             label: "Messenger / Inbox"
+          },
+          {
+            key: "/products",
+            icon: <ShoppingOutlined />,
+            label: "Products"
           },
           {
             key: "settings",

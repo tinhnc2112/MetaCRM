@@ -1065,6 +1065,103 @@ body {
   gap: 8px;
 }
 
+.product-management-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.product-management-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.product-management-header h2 {
+  margin-bottom: 4px;
+}
+
+.product-management-section {
+  padding: 20px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.product-management-toolbar {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) 200px;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.product-active-filter {
+  width: 100%;
+}
+
+.product-page-loading {
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+}
+
+.product-name-cell {
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.product-name-cell .ant-typography {
+  max-width: 360px;
+  margin-bottom: 0;
+}
+
+.product-management-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.product-editor-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 8px;
+}
+
+.product-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #374151;
+  font-weight: 500;
+}
+
+.product-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.65fr) minmax(0, 1.35fr);
+  gap: 12px;
+}
+
+.product-active-field {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.product-active-field .ant-typography {
+  margin-bottom: 0;
+}
+
 @media (max-width: 1200px) {
   body {
     min-width: 0;
@@ -1081,6 +1178,14 @@ body {
   .customer-duplicates-layout,
   .customer-duplicates-columns,
   .customer-merge-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .product-management-header {
+    flex-direction: column;
+  }
+
+  .product-management-toolbar {
     grid-template-columns: 1fr;
   }
 }
