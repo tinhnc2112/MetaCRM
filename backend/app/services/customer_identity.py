@@ -14,9 +14,14 @@ from datetime import UTC, datetime
 
 from app.models.base import utc_now
 from app.models.customer_core import Customer, CustomerIdentity
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 CHANNEL_FACEBOOK = "FACEBOOK"
+
+
+class CustomerIdentityConsistencyError(ValueError):
+    """Raised when a scoped identity and Conversation disagree on Customer ownership."""
 
 
 def _ensure_utc(dt: datetime | None) -> datetime | None:
@@ -34,10 +39,101 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
 def _resolve_root_customer(session: Session, customer_id: int) -> Customer | None:
     current = session.get(Customer, customer_id)
     seen: set[int] = set()
-    while current is not None and current.merged_into_customer_id is not None and current.id not in seen:
+    while (
+        current is not None
+        and current.merged_into_customer_id is not None
+        and current.id not in seen
+    ):
         seen.add(current.id)
         current = session.get(Customer, current.merged_into_customer_id)
     return current
+
+
+def _find_customer_identity(
+    session: Session,
+    *,
+    channel: str,
+    facebook_page_id: int,
+    external_id: str,
+) -> CustomerIdentity | None:
+    return (
+        session.query(CustomerIdentity)
+        .filter(
+            CustomerIdentity.channel == channel,
+            CustomerIdentity.facebook_page_id == facebook_page_id,
+            CustomerIdentity.external_id == external_id,
+        )
+        .first()
+    )
+
+
+def _update_identity_profile(
+    session: Session,
+    identity: CustomerIdentity,
+    *,
+    display_name: str | None,
+    avatar_url: str | None,
+    seen_at: datetime,
+) -> None:
+    updated = False
+    if display_name and not identity.display_name:
+        identity.display_name = display_name
+        updated = True
+    if avatar_url and not identity.avatar_url:
+        identity.avatar_url = avatar_url
+        updated = True
+    seen_at_utc = _ensure_utc(seen_at)
+    last_seen_utc = _ensure_utc(identity.last_seen_at)
+    if last_seen_utc is None or (seen_at_utc is not None and seen_at_utc > last_seen_utc):
+        identity.last_seen_at = seen_at
+        updated = True
+    if updated:
+        session.add(identity)
+        session.flush()
+
+
+def _create_scoped_identity(
+    session: Session,
+    *,
+    channel: str,
+    facebook_page_id: int,
+    external_id: str,
+    display_name: str | None,
+    avatar_url: str | None,
+    seen_at: datetime,
+    customer: Customer | None = None,
+) -> CustomerIdentity:
+    """Create Customer+identity in a savepoint and reload a concurrent winner."""
+    try:
+        with session.begin_nested():
+            scoped_customer = customer
+            if scoped_customer is None:
+                scoped_customer = Customer(name=display_name, status="ACTIVE")
+                session.add(scoped_customer)
+                session.flush()
+            identity = CustomerIdentity(
+                customer_id=scoped_customer.id,
+                facebook_page_id=facebook_page_id,
+                channel=channel,
+                external_id=external_id,
+                display_name=display_name,
+                avatar_url=avatar_url,
+                first_seen_at=seen_at,
+                last_seen_at=seen_at,
+            )
+            session.add(identity)
+            session.flush()
+    except IntegrityError:
+        winner = _find_customer_identity(
+            session,
+            channel=channel,
+            facebook_page_id=facebook_page_id,
+            external_id=external_id,
+        )
+        if winner is None:
+            raise
+        return winner
+    return identity
 
 
 def get_or_create_customer_identity(
@@ -45,63 +141,51 @@ def get_or_create_customer_identity(
     *,
     channel: str,
     external_id: str,
+    facebook_page_id: int,
     display_name: str | None = None,
     avatar_url: str | None = None,
     seen_at: datetime | None = None,
 ) -> CustomerIdentity:
-    """Return the existing CustomerIdentity for (channel, external_id), or
-    create a new Customer + CustomerIdentity pair if none exists yet.
+    """Return the Page-scoped identity, or create a Customer+identity pair.
 
-    Idempotent: safe to call repeatedly for the same (channel, external_id).
+    Idempotent for the same ``(channel, facebook_page_id, external_id)``.
     Does not commit; caller controls the transaction boundary.
     """
     seen_at = seen_at or utc_now()
 
-    identity = (
-        session.query(CustomerIdentity)
-        .filter(
-            CustomerIdentity.channel == channel,
-            CustomerIdentity.external_id == external_id,
-        )
-        .first()
+    identity = _find_customer_identity(
+        session,
+        channel=channel,
+        facebook_page_id=facebook_page_id,
+        external_id=external_id,
     )
 
     if identity is not None:
-        updated = False
-        if display_name and not identity.display_name:
-            identity.display_name = display_name
-            updated = True
-        if avatar_url and not identity.avatar_url:
-            identity.avatar_url = avatar_url
-            updated = True
-        seen_at_utc = _ensure_utc(seen_at)
-        last_seen_utc = _ensure_utc(identity.last_seen_at)
-        if last_seen_utc is None or seen_at_utc > last_seen_utc:
-            identity.last_seen_at = seen_at
-            updated = True
-        if updated:
-            session.add(identity)
-            session.flush()
+        _update_identity_profile(
+            session,
+            identity,
+            display_name=display_name,
+            avatar_url=avatar_url,
+            seen_at=seen_at,
+        )
         return identity
 
-    customer = Customer(
-        name=display_name,
-        status="ACTIVE",
-    )
-    session.add(customer)
-    session.flush()  # obtain customer.id
-
-    identity = CustomerIdentity(
-        customer_id=customer.id,
+    identity = _create_scoped_identity(
+        session,
         channel=channel,
+        facebook_page_id=facebook_page_id,
         external_id=external_id,
         display_name=display_name,
         avatar_url=avatar_url,
-        first_seen_at=seen_at,
-        last_seen_at=seen_at,
+        seen_at=seen_at,
     )
-    session.add(identity)
-    session.flush()
+    _update_identity_profile(
+        session,
+        identity,
+        display_name=display_name,
+        avatar_url=avatar_url,
+        seen_at=seen_at,
+    )
     return identity
 
 
@@ -112,59 +196,80 @@ def resolve_customer_for_conversation(session: Session, conversation) -> int:
     for newly-created Conversations"): any code path that touches a
     Conversation without a linked Customer will lazily create the
     CustomerIdentity mapping here instead of failing or leaving customer_id
-    NULL. Idempotent: a Conversation that already has customer_id is
-    returned unchanged (no extra queries).
+    NULL. Existing links are checked against the Page-scoped identity and
+    canonical merge root before being returned.
     """
-    if conversation.customer_id is not None:
-        root_customer = _resolve_root_customer(session, conversation.customer_id)
-        if root_customer is not None and root_customer.id != conversation.customer_id:
-            conversation.customer_id = root_customer.id
-            session.add(conversation)
-            session.flush()
-        customer_id = conversation.customer_id
-        identity = (
-            session.query(CustomerIdentity)
-            .filter(
-                CustomerIdentity.channel == CHANNEL_FACEBOOK,
-                CustomerIdentity.external_id == conversation.psid,
-            )
-            .first()
-        )
-        if identity is not None:
-            updated = False
-            if identity.customer_id != customer_id:
-                identity.customer_id = customer_id
-                updated = True
-            if conversation.customer_name and not identity.display_name:
-                identity.display_name = conversation.customer_name
-                updated = True
-            if conversation.customer_avatar_url and not identity.avatar_url:
-                identity.avatar_url = conversation.customer_avatar_url
-                updated = True
-            if updated:
-                session.add(identity)
-                session.flush()
-            return customer_id
+    facebook_page_id = conversation.facebook_page_id
+    if facebook_page_id is None:
+        raise CustomerIdentityConsistencyError("Conversation has no Facebook Page scope")
 
-        identity = CustomerIdentity(
-            customer_id=customer_id,
-            channel=CHANNEL_FACEBOOK,
-            external_id=conversation.psid,
+    identity = _find_customer_identity(
+        session,
+        channel=CHANNEL_FACEBOOK,
+        facebook_page_id=facebook_page_id,
+        external_id=conversation.psid,
+    )
+
+    if conversation.customer_id is not None:
+        conversation_root = _resolve_root_customer(session, conversation.customer_id)
+        if conversation_root is None:
+            raise CustomerIdentityConsistencyError("Conversation references a missing Customer")
+
+        if identity is None:
+            identity = _create_scoped_identity(
+                session,
+                channel=CHANNEL_FACEBOOK,
+                facebook_page_id=facebook_page_id,
+                external_id=conversation.psid,
+                display_name=conversation.customer_name,
+                avatar_url=conversation.customer_avatar_url,
+                seen_at=utc_now(),
+                customer=conversation_root,
+            )
+
+        identity_root = _resolve_root_customer(session, identity.customer_id)
+        if identity_root is None or identity_root.id != conversation_root.id:
+            raise CustomerIdentityConsistencyError(
+                "Scoped CustomerIdentity belongs to a different Customer"
+            )
+
+        changed = False
+        if conversation.customer_id != conversation_root.id:
+            conversation.customer_id = conversation_root.id
+            session.add(conversation)
+            changed = True
+        if identity.customer_id != conversation_root.id:
+            identity.customer_id = conversation_root.id
+            session.add(identity)
+            changed = True
+        if changed:
+            session.flush()
+        _update_identity_profile(
+            session,
+            identity,
             display_name=conversation.customer_name,
             avatar_url=conversation.customer_avatar_url,
+            seen_at=utc_now(),
         )
-        session.add(identity)
-        session.flush()
-        return customer_id
+        return conversation_root.id
 
     identity = get_or_create_customer_identity(
         session,
         channel=CHANNEL_FACEBOOK,
+        facebook_page_id=facebook_page_id,
         external_id=conversation.psid,
         display_name=conversation.customer_name,
         avatar_url=conversation.customer_avatar_url,
     )
-    conversation.customer_id = identity.customer_id
+    identity_root = _resolve_root_customer(session, identity.customer_id)
+    if identity_root is None:
+        raise CustomerIdentityConsistencyError(
+            "Scoped CustomerIdentity references a missing Customer"
+        )
+    if identity.customer_id != identity_root.id:
+        identity.customer_id = identity_root.id
+        session.add(identity)
+    conversation.customer_id = identity_root.id
     session.add(conversation)
     session.flush()
     return conversation.customer_id
@@ -179,12 +284,10 @@ class BackfillResult:
 
 def backfill_conversation_customers(session: Session) -> BackfillResult:
     """Link every existing facebook_conversations row without customer_id to
-    a Customer, creating one CustomerIdentity(channel=FACEBOOK, external_id=psid)
-    per distinct PSID.
+    a Customer, creating one identity per distinct Facebook Page + PSID.
 
     Repeatable/idempotent: conversations that already have customer_id are
-    skipped; identities are looked up by the (channel, external_id) unique
-    constraint before a new Customer is created.
+    skipped; scoped identities are checked before a new Customer is created.
     """
     # Local import to avoid a module-level circular import between
     # app.models.messenger and app.services.customer_identity.
@@ -203,6 +306,7 @@ def backfill_conversation_customers(session: Session) -> BackfillResult:
         identity = get_or_create_customer_identity(
             session,
             channel=CHANNEL_FACEBOOK,
+            facebook_page_id=conversation.facebook_page_id,
             external_id=conversation.psid,
             display_name=conversation.customer_name,
             avatar_url=conversation.customer_avatar_url,

@@ -2,9 +2,9 @@
 
 A Customer represents one real end-user regardless of which channel
 (Facebook Messenger today; Instagram/TikTok/Zalo later) they were first
-seen on. CustomerIdentity maps a (channel, external_id) pair to a Customer
-so that channel-specific tables (Conversation, future Order, etc.) can
-reference a stable customer_id instead of a channel-specific identifier.
+seen on. CustomerIdentity maps a Page-scoped channel identity to a Customer
+so channel-specific tables (Conversation, future Order, etc.) can reference
+a stable customer_id instead of a channel-specific identifier.
 
 See docs/02_DOMAIN_MODEL.md and docs/03_CUSTOMER.md for the source spec.
 """
@@ -12,11 +12,15 @@ See docs/02_DOMAIN_MODEL.md and docs/03_CUSTOMER.md for the source spec.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from app.db.base import Base
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+if TYPE_CHECKING:
+    from app.models.facebook import FacebookPage
 
 
 def utc_now() -> datetime:
@@ -55,13 +59,13 @@ class Customer(Base):
         lazy="selectin",
         foreign_keys="CustomerIdentity.customer_id",
     )
-    merged_into: Mapped["Customer | None"] = relationship(
+    merged_into: Mapped[Customer | None] = relationship(
         remote_side="Customer.id", foreign_keys=[merged_into_customer_id]
     )
 
 
 class CustomerIdentity(Base):
-    """Maps one (channel, external_id) pair to a Customer.
+    """Maps one (channel, Facebook Page, external_id) tuple to a Customer.
 
     A customer may hold multiple identities (e.g. the same person messaging
     from two different Facebook Pages, or later, Instagram/Zalo). external_id
@@ -71,15 +75,28 @@ class CustomerIdentity(Base):
     __tablename__ = "customer_identities"
     __table_args__ = (
         UniqueConstraint(
-            "channel", "external_id", name="uq_customer_identities_channel_external_id"
+            "channel",
+            "facebook_page_id",
+            "external_id",
+            name="uq_customer_identities_channel_page_external_id",
         ),
         Index("ix_customer_identities_customer_id", "customer_id"),
+        Index("ix_customer_identities_facebook_page_id", "facebook_page_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     uuid: Mapped[UUID] = mapped_column(unique=True, nullable=False, default=uuid4, index=True)
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.id", ondelete="CASCADE"), nullable=False
+    )
+    facebook_page_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey(
+            "facebook_pages.id",
+            name="fk_customer_identities_facebook_page_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     channel: Mapped[str] = mapped_column(String(32), nullable=False)
     external_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -94,3 +111,4 @@ class CustomerIdentity(Base):
     )
 
     customer: Mapped[Customer] = relationship(back_populates="identities")
+    facebook_page: Mapped[FacebookPage] = relationship()

@@ -721,6 +721,38 @@ class TestWebhookReceive:
         # Second call: event_processed=1 because upsert returns existing, was_created=False
         assert session.query(Message).count() == 1  # still only one message
 
+    def test_same_psid_on_different_pages_creates_isolated_customers(
+        self, client: TestClient, session: Session
+    ) -> None:
+        account = session.query(FacebookAccount).one()
+        session.add(
+            FacebookPage(
+                facebook_account_id=account.id,
+                page_id="page-222",
+                name="Alice Second Page",
+                is_active=True,
+            )
+        )
+        session.commit()
+
+        first = self._post(
+            client,
+            _message_payload(page_id="page-111", psid="same-psid", mid="m_page_111"),
+        )
+        second = self._post(
+            client,
+            _message_payload(page_id="page-222", psid="same-psid", mid="m_page_222"),
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        conversations = session.query(Conversation).order_by(Conversation.facebook_page_id).all()
+        assert len(conversations) == 2
+        assert conversations[0].customer_id != conversations[1].customer_id
+        identities = session.query(CustomerIdentity).order_by(CustomerIdentity.facebook_page_id).all()
+        assert len(identities) == 2
+        assert identities[0].facebook_page_id != identities[1].facebook_page_id
+
     def test_invalid_signature_returns_403(self, client: TestClient) -> None:
         body = json.dumps(_message_payload()).encode()
         response = client.post(

@@ -14,8 +14,8 @@ from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.client import FacebookGraphClient
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.exceptions import FacebookIntegrationError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-
 
 # ---------------------------------------------------------------------------
 # Signature verification
@@ -177,7 +177,9 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC)
 
 
-def _fetch_customer_profile(facebook_page: FacebookPage, psid: str) -> tuple[str | None, str | None]:
+def _fetch_customer_profile(
+    facebook_page: FacebookPage, psid: str
+) -> tuple[str | None, str | None]:
     encrypted_token = facebook_page.access_token_encrypted
     if not encrypted_token and facebook_page.facebook_account is not None:
         encrypted_token = facebook_page.facebook_account.access_token_encrypted
@@ -200,12 +202,18 @@ def _fetch_customer_profile(facebook_page: FacebookPage, psid: str) -> tuple[str
     )
 
 
-def hydrate_conversation_identity(session: Session, conversation: Conversation, facebook_page: FacebookPage) -> None:
+def hydrate_conversation_identity(
+    session: Session,
+    conversation: Conversation,
+    facebook_page: FacebookPage,
+) -> None:
     if conversation.customer_name and conversation.customer_avatar_url:
         return
 
     try:
-        customer_name, customer_avatar_url = _fetch_customer_profile(facebook_page, conversation.psid)
+        customer_name, customer_avatar_url = _fetch_customer_profile(
+            facebook_page, conversation.psid
+        )
     except FacebookIntegrationError:
         return
 
@@ -233,6 +241,18 @@ def find_page_by_page_id(session: Session, page_id: str) -> FacebookPage | None:
     )
 
 
+def _find_conversation(session: Session, facebook_page_id: int, psid: str) -> Conversation | None:
+    return (
+        session.query(Conversation)
+        .filter(
+            Conversation.facebook_page_id == facebook_page_id,
+            Conversation.psid == psid,
+            Conversation.deleted_at.is_(None),
+        )
+        .first()
+    )
+
+
 def upsert_conversation(
     session: Session,
     facebook_page: FacebookPage,
@@ -240,24 +260,22 @@ def upsert_conversation(
     event_ts: datetime | None,
 ) -> Conversation:
     """Return existing Conversation or create a new one (idempotent by page+psid)."""
-    conversation = (
-        session.query(Conversation)
-        .filter(
-            Conversation.facebook_page_id == facebook_page.id,
-            Conversation.psid == psid,
-            Conversation.deleted_at.is_(None),
-        )
-        .first()
-    )
+    conversation = _find_conversation(session, facebook_page.id, psid)
 
     if conversation is None:
-        conversation = Conversation(
-            facebook_page_id=facebook_page.id,
-            page_id=facebook_page.page_id,
-            psid=psid,
-        )
-        session.add(conversation)
-        session.flush()  # obtain PK before creating Message FK
+        try:
+            with session.begin_nested():
+                conversation = Conversation(
+                    facebook_page_id=facebook_page.id,
+                    page_id=facebook_page.page_id,
+                    psid=psid,
+                )
+                session.add(conversation)
+                session.flush()  # unique Page+PSID constraint arbitrates races
+        except IntegrityError:
+            conversation = _find_conversation(session, facebook_page.id, psid)
+            if conversation is None:
+                raise
 
     # M19.6: every Conversation must be linked to a channel-independent
     # Customer — both a brand-new Conversation created above AND a
