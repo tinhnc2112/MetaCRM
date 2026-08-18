@@ -212,7 +212,14 @@ def get_customer_profile(session: Session, user: User, conversation_id: str) -> 
     # against this conversation's own id is unaffected by that remap.
     is_merged_away = (
         session.query(CustomerMerge)
-        .filter(CustomerMerge.secondary_conversation_id == conversation.id)
+        .filter(
+            CustomerMerge.secondary_conversation_id == conversation.id,
+            or_(
+                CustomerMerge.primary_customer_id.is_(None),
+                CustomerMerge.secondary_customer_id.is_(None),
+                CustomerMerge.primary_customer_id != CustomerMerge.secondary_customer_id,
+            ),
+        )
         .first()
     ) is not None
     if is_merged_away:

@@ -12,7 +12,7 @@ from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
 from app.models.auth import User
-from app.models.customer_core import CustomerIdentity
+from app.models.customer_core import Customer, CustomerIdentity
 from app.models.customers import (
     CustomerMerge,
     CustomerNote,
@@ -25,6 +25,7 @@ from app.models.messenger import Conversation, Message
 from app.models.orders import Order
 from app.services.customer_identity import CHANNEL_FACEBOOK, resolve_customer_for_conversation
 from app.services.facebook.crypto import TokenCipher
+from app.services.facebook.customer_duplicates import list_customer_duplicates
 from app.services.facebook.pages import select_current_page
 from app.utils.jwt import create_access_token
 from app.utils.password import hash_password
@@ -699,4 +700,396 @@ def test_merge_rejects_inconsistent_note_ownership_before_mutation(
     assert session.get(Conversation, primary.id).customer_id == primary_customer_id
     assert session.get(Conversation, secondary.id).customer_id == secondary_customer_id
     assert session.get(CustomerNote, inconsistent_note.id).customer_id == secondary_customer_id
+    assert session.query(CustomerMerge).count() == 0
+
+
+def test_reverse_retry_creates_no_self_merge_and_preserves_primary_profile(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page = _make_page(session, alice, "page-reverse-retry")
+    _select_page(session, alice, page)
+    primary = _make_conversation(
+        session,
+        page,
+        "psid-reverse-primary",
+        customer_name="Reverse Retry",
+        customer_avatar_url="https://img.example.com/reverse.png",
+    )
+    secondary = _make_conversation(
+        session,
+        page,
+        "psid-reverse-secondary",
+        customer_name="Reverse Retry",
+        customer_avatar_url="https://img.example.com/reverse.png",
+    )
+
+    first = client.post(
+        f"/api/v1/facebook/customers/{primary.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(secondary.uuid)),
+    )
+    exact_retry = client.post(
+        f"/api/v1/facebook/customers/{primary.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(secondary.uuid)),
+    )
+    reverse_retry = client.post(
+        f"/api/v1/facebook/customers/{secondary.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(primary.uuid)),
+    )
+
+    assert first.status_code == 200
+    assert exact_retry.status_code == 200
+    assert exact_retry.json()["merge_id"] == first.json()["merge_id"]
+    assert reverse_retry.status_code == 409
+    merges = session.query(CustomerMerge).all()
+    assert len(merges) == 1
+    assert merges[0].primary_customer_id != merges[0].secondary_customer_id
+    assert client.get(
+        f"/api/v1/facebook/customers/{primary.uuid}", headers=_auth(alice)
+    ).status_code == 200
+    assert client.get(
+        f"/api/v1/facebook/customers/{secondary.uuid}", headers=_auth(alice)
+    ).status_code == 404
+
+
+def test_same_canonical_merge_is_conflict_without_any_mutation(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page = _make_page(session, alice, "page-same-canonical")
+    _select_page(session, alice, page)
+    first = _make_conversation(
+        session,
+        page,
+        "psid-same-canonical-first",
+        customer_name="Same Canonical",
+        customer_avatar_url="https://img.example.com/same-canonical.png",
+    )
+    second = _make_conversation(
+        session,
+        page,
+        "psid-same-canonical-second",
+        customer_name="Same Canonical",
+        customer_avatar_url="https://img.example.com/same-canonical.png",
+    )
+    customer_id = resolve_customer_for_conversation(session, first)
+    second.customer_id = customer_id
+    resolve_customer_for_conversation(session, second)
+    tag = CustomerTag(facebook_page_id=page.id, name="Same", slug="same")
+    session.add(tag)
+    session.flush()
+    note = CustomerNote(
+        conversation_id=second.id,
+        customer_id=customer_id,
+        user_id=alice.id,
+        content="Same-canonical note",
+    )
+    assignment = CustomerTagAssignment(
+        conversation_id=second.id,
+        customer_id=customer_id,
+        tag_id=tag.id,
+    )
+    event = CustomerTagEvent(
+        conversation_id=second.id,
+        customer_id=customer_id,
+        tag_id=tag.id,
+        user_id=alice.id,
+        action="added",
+        tag_name_snapshot=tag.name,
+        tag_slug_snapshot=tag.slug,
+    )
+    order = Order(
+        facebook_page_id=page.id,
+        customer_id=customer_id,
+        conversation_id=second.id,
+        order_number="ORD-SAME-CANONICAL",
+        subtotal_amount=Decimal("1.00"),
+        total_amount=Decimal("1.00"),
+    )
+    session.add_all([note, assignment, event, order])
+    session.commit()
+    identity_ids = {
+        identity.id
+        for identity in session.query(CustomerIdentity)
+        .filter(CustomerIdentity.customer_id == customer_id)
+        .all()
+    }
+
+    response = client.post(
+        f"/api/v1/facebook/customers/{first.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(second.uuid)),
+    )
+
+    assert response.status_code == 409
+    assert session.query(CustomerMerge).count() == 0
+    assert session.get(Conversation, first.id).customer_id == customer_id
+    assert session.get(Conversation, second.id).customer_id == customer_id
+    assert {
+        identity.id
+        for identity in session.query(CustomerIdentity)
+        .filter(CustomerIdentity.customer_id == customer_id)
+        .all()
+    } == identity_ids
+    assert session.get(CustomerNote, note.id).customer_id == customer_id
+    assert session.get(CustomerTagAssignment, assignment.id).customer_id == customer_id
+    assert session.get(CustomerTagEvent, event.id).customer_id == customer_id
+    assert session.get(Order, order.id).customer_id == customer_id
+    assert client.get(
+        f"/api/v1/facebook/customers/{second.uuid}", headers=_auth(alice)
+    ).status_code == 200
+
+
+def test_already_merged_primary_conversation_uses_canonical_root(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page = _make_page(session, alice, "page-canonical-primary")
+    _select_page(session, alice, page)
+    primary = _make_conversation(
+        session,
+        page,
+        "psid-canonical-primary-a",
+        customer_name="Canonical Chain",
+        customer_avatar_url="https://img.example.com/canonical-chain.png",
+    )
+    merged_primary_input = _make_conversation(
+        session,
+        page,
+        "psid-canonical-primary-b",
+        customer_name="Canonical Chain",
+        customer_avatar_url="https://img.example.com/canonical-chain.png",
+    )
+    third = _make_conversation(
+        session,
+        page,
+        "psid-canonical-primary-c",
+        customer_name="Canonical Chain",
+        customer_avatar_url="https://img.example.com/canonical-chain.png",
+    )
+    canonical_id = resolve_customer_for_conversation(session, primary)
+    merged_customer_id = resolve_customer_for_conversation(session, merged_primary_input)
+    third_customer_id = resolve_customer_for_conversation(session, third)
+
+    assert client.post(
+        f"/api/v1/facebook/customers/{primary.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(merged_primary_input.uuid)),
+    ).status_code == 200
+    second_merge = client.post(
+        f"/api/v1/facebook/customers/{merged_primary_input.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(third.uuid)),
+    )
+
+    assert second_merge.status_code == 200
+    session.expire_all()
+    assert session.get(Customer, merged_customer_id).merged_into_customer_id == canonical_id
+    assert session.get(Customer, third_customer_id).merged_into_customer_id == canonical_id
+    assert session.get(Customer, canonical_id).merged_into_customer_id is None
+    assert session.query(CustomerMerge).count() == 2
+    latest = session.query(CustomerMerge).order_by(CustomerMerge.id.desc()).first()
+    assert latest is not None
+    assert latest.primary_customer_id == canonical_id
+    assert latest.secondary_customer_id == third_customer_id
+
+
+def test_already_merged_secondary_conversation_is_rejected(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page = _make_page(session, alice, "page-canonical-secondary")
+    _select_page(session, alice, page)
+    primary = _make_conversation(
+        session,
+        page,
+        "psid-canonical-secondary-a",
+        customer_name="Canonical Secondary",
+        customer_avatar_url="https://img.example.com/canonical-secondary.png",
+    )
+    merged_secondary = _make_conversation(
+        session,
+        page,
+        "psid-canonical-secondary-b",
+        customer_name="Canonical Secondary",
+        customer_avatar_url="https://img.example.com/canonical-secondary.png",
+    )
+    third = _make_conversation(
+        session,
+        page,
+        "psid-canonical-secondary-c",
+        customer_name="Canonical Secondary",
+        customer_avatar_url="https://img.example.com/canonical-secondary.png",
+    )
+    third_customer_id = resolve_customer_for_conversation(session, third)
+    assert client.post(
+        f"/api/v1/facebook/customers/{primary.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(merged_secondary.uuid)),
+    ).status_code == 200
+
+    response = client.post(
+        f"/api/v1/facebook/customers/{third.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(merged_secondary.uuid)),
+    )
+
+    assert response.status_code == 409
+    assert session.query(CustomerMerge).count() == 1
+    assert session.get(Customer, third_customer_id).merged_into_customer_id is None
+    assert session.get(Conversation, third.id).customer_id == third_customer_id
+
+
+def test_duplicate_candidates_are_unique_per_canonical_customer_pair(
+    session: Session,
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page = _make_page(session, alice, "page-canonical-candidates")
+    _select_page(session, alice, page)
+    first_a = _make_conversation(
+        session,
+        page,
+        "psid-candidate-a1",
+        customer_name="Canonical Candidate",
+        customer_avatar_url="https://img.example.com/candidate.png",
+    )
+    second_a = _make_conversation(
+        session,
+        page,
+        "psid-candidate-a2",
+        customer_name="Canonical Candidate",
+        customer_avatar_url="https://img.example.com/candidate.png",
+    )
+    first_b = _make_conversation(
+        session,
+        page,
+        "psid-candidate-b1",
+        customer_name="Canonical Candidate",
+        customer_avatar_url="https://img.example.com/candidate.png",
+    )
+    second_b = _make_conversation(
+        session,
+        page,
+        "psid-candidate-b2",
+        customer_name="Canonical Candidate",
+        customer_avatar_url="https://img.example.com/candidate.png",
+    )
+    customer_a = resolve_customer_for_conversation(session, first_a)
+    second_a.customer_id = customer_a
+    resolve_customer_for_conversation(session, second_a)
+    customer_b = resolve_customer_for_conversation(session, first_b)
+    second_b.customer_id = customer_b
+    resolve_customer_for_conversation(session, second_b)
+
+    result = list_customer_duplicates(session, alice)
+
+    assert result is not None
+    assert result.total == 1
+    candidate = result.items[0]
+    assert {candidate.primary_customer.id, candidate.duplicate_customer.id} == {
+        first_a.id,
+        first_b.id,
+    }
+    assert candidate.confidence == 0.9
+    assert candidate.matching_fields == ["customer_name", "customer_avatar_url"]
+
+
+def test_duplicate_candidates_disappear_after_customer_merge(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page = _make_page(session, alice, "page-candidates-after-merge")
+    _select_page(session, alice, page)
+    primary = _make_conversation(
+        session,
+        page,
+        "psid-candidates-after-primary",
+        customer_name="After Merge",
+        customer_avatar_url="https://img.example.com/after-merge.png",
+    )
+    secondary = _make_conversation(
+        session,
+        page,
+        "psid-candidates-after-secondary",
+        customer_name="After Merge",
+        customer_avatar_url="https://img.example.com/after-merge.png",
+    )
+    before = list_customer_duplicates(session, alice)
+    assert before is not None and before.total == 1
+    assert client.post(
+        f"/api/v1/facebook/customers/{primary.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(secondary.uuid)),
+    ).status_code == 200
+
+    after = list_customer_duplicates(session, alice)
+
+    assert after is not None
+    assert after.total == 0
+
+
+def test_legacy_same_customer_audit_does_not_hide_conversation_profile(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page = _make_page(session, alice, "page-legacy-self-audit")
+    _select_page(session, alice, page)
+    first = _make_conversation(session, page, "psid-legacy-self-first")
+    second = _make_conversation(session, page, "psid-legacy-self-second")
+    customer_id = resolve_customer_for_conversation(session, first)
+    second.customer_id = customer_id
+    session.add(
+        CustomerMerge(
+            facebook_page_id=page.id,
+            primary_conversation_id=first.id,
+            secondary_conversation_id=second.id,
+            primary_customer_id=customer_id,
+            secondary_customer_id=customer_id,
+            merged_by_user_id=alice.id,
+            duplicate_confidence=0.0,
+            duplicate_reason="Legacy invalid self merge",
+            matching_fields=[],
+            matching_signals=[],
+        )
+    )
+    session.commit()
+
+    response = client.get(
+        f"/api/v1/facebook/customers/{second.uuid}", headers=_auth(alice)
+    )
+
+    assert response.status_code == 200
+
+
+def test_corrupted_customer_merge_cycle_is_rejected_without_audit(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = session.query(User).order_by(User.id.asc()).all()
+    page = _make_page(session, alice, "page-cycle-guard")
+    _select_page(session, alice, page)
+    first_customer = Customer(name="Cycle")
+    second_customer = Customer(name="Cycle")
+    session.add_all([first_customer, second_customer])
+    session.flush()
+    first_customer.merged_into_customer_id = second_customer.id
+    second_customer.merged_into_customer_id = first_customer.id
+    first = _make_conversation(session, page, "psid-cycle-first")
+    second = _make_conversation(session, page, "psid-cycle-second")
+    first.customer_id = first_customer.id
+    second.customer_id = second_customer.id
+    first.customer_name = second.customer_name = "Cycle"
+    first.customer_avatar_url = second.customer_avatar_url = "https://img.example.com/cycle.png"
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/facebook/customers/{first.uuid}/merge",
+        headers=_auth(alice),
+        json=_merge_payload(str(second.uuid)),
+    )
+
+    assert response.status_code == 422
+    assert "cycle" in response.json()["detail"].lower()
     assert session.query(CustomerMerge).count() == 0

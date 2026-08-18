@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from app.models.auth import User
-from app.models.customer_core import Customer, CustomerIdentity
+from app.models.customer_core import CustomerIdentity
 from app.models.customers import (
     CustomerMerge,
     CustomerNote,
@@ -17,9 +17,14 @@ from app.models.customers import (
 )
 from app.models.messenger import Conversation
 from app.models.orders import Order
-from app.services.customer_identity import resolve_customer_for_conversation
+from app.services.customer_identity import (
+    CustomerIdentityConsistencyError,
+    resolve_customer_for_conversation,
+    resolve_root_customer,
+)
 from app.services.facebook.conversations import PaginatedResult
 from app.services.facebook.pages import get_current_page
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 
@@ -180,12 +185,55 @@ def list_customer_duplicates(
     if len(conversations) < 2:
         return PaginatedResult(items=[], total=0, page=page, page_size=page_size)
 
+    merged_secondary_conversation_ids = {
+        conversation_id
+        for (conversation_id,) in session.query(CustomerMerge.secondary_conversation_id)
+        .filter(CustomerMerge.facebook_page_id == page_obj.id)
+        .all()
+    }
+    canonical_customer_ids: dict[int, int] = {}
+    eligible_conversations: list[Conversation] = []
+    for conversation in conversations:
+        if conversation.id in merged_secondary_conversation_ids:
+            continue
+        if conversation.customer_id is None:
+            # Preserve legacy candidate discovery without mutating from a GET.
+            canonical_customer_ids[conversation.id] = -conversation.id
+            eligible_conversations.append(conversation)
+            continue
+        try:
+            root = resolve_root_customer(session, conversation.customer_id)
+        except CustomerIdentityConsistencyError:
+            continue
+        if root is None or root.deleted_at is not None:
+            continue
+        canonical_customer_ids[conversation.id] = root.id
+        eligible_conversations.append(conversation)
+
+    already_merged_pairs: set[tuple[int, int]] = set()
+    for primary_customer_id, secondary_customer_id in (
+        session.query(CustomerMerge.primary_customer_id, CustomerMerge.secondary_customer_id)
+        .filter(
+            CustomerMerge.facebook_page_id == page_obj.id,
+            CustomerMerge.primary_customer_id.is_not(None),
+            CustomerMerge.secondary_customer_id.is_not(None),
+        )
+        .all()
+    ):
+        try:
+            primary_root = resolve_root_customer(session, primary_customer_id)
+            secondary_root = resolve_root_customer(session, secondary_customer_id)
+        except CustomerIdentityConsistencyError:
+            continue
+        if primary_root is not None and secondary_root is not None and primary_root.id != secondary_root.id:
+            already_merged_pairs.add(_pair_key(primary_root.id, secondary_root.id))
+
     pair_map: dict[tuple[int, int], CustomerDuplicateData] = {}
     grouped: dict[str, list[Conversation]] = {}
     grouped_avatar: dict[str, list[Conversation]] = {}
     grouped_name_avatar: dict[tuple[str, str], list[Conversation]] = {}
 
-    for conversation in conversations:
+    for conversation in eligible_conversations:
         if conversation.psid:
             grouped.setdefault(f"psid:{conversation.psid}", []).append(conversation)
         avatar = _normalize_url(conversation.customer_avatar_url)
@@ -195,39 +243,23 @@ def list_customer_duplicates(
         if name and avatar:
             grouped_name_avatar.setdefault((name, avatar), []).append(conversation)
 
-    for bucket in grouped.values():
-        if len(bucket) < 2:
-            continue
-        for index, first in enumerate(bucket):
-            for second in bucket[index + 1 :]:
-                confidence_reason = _duplicate_signals(first, second)
-                if confidence_reason is None:
-                    continue
-                confidence, reason, matching_fields, matching_signals = confidence_reason
-                primary, duplicate = _duplicate_primary_duplicate_pair(first, second)
-                pair_map[_pair_key(primary.id, duplicate.id)] = CustomerDuplicateData(
-                    primary_customer=primary,
-                    duplicate_customer=duplicate,
-                    confidence=confidence,
-                    reason=reason,
-                    matching_fields=matching_fields,
-                    matching_signals=matching_signals,
-                )
-
-    for bucket in grouped_avatar.values():
-        if len(bucket) < 2:
-            continue
-        for index, first in enumerate(bucket):
-            for second in bucket[index + 1 :]:
-                confidence_reason = _duplicate_signals(first, second)
-                if confidence_reason is None:
-                    continue
-                confidence, reason, matching_fields, matching_signals = confidence_reason
-                primary, duplicate = _duplicate_primary_duplicate_pair(first, second)
-                key = _pair_key(primary.id, duplicate.id)
-                existing = pair_map.get(key)
-                if existing is None or confidence > existing.confidence:
-                    pair_map[key] = CustomerDuplicateData(
+    for buckets in (grouped.values(), grouped_avatar.values(), grouped_name_avatar.values()):
+        for bucket in buckets:
+            if len(bucket) < 2:
+                continue
+            for index, first in enumerate(bucket):
+                for second in bucket[index + 1 :]:
+                    canonical_key = _pair_key(
+                        canonical_customer_ids[first.id], canonical_customer_ids[second.id]
+                    )
+                    if canonical_key[0] == canonical_key[1] or canonical_key in already_merged_pairs:
+                        continue
+                    confidence_reason = _duplicate_signals(first, second)
+                    if confidence_reason is None:
+                        continue
+                    confidence, reason, matching_fields, matching_signals = confidence_reason
+                    primary, duplicate = _duplicate_primary_duplicate_pair(first, second)
+                    candidate = CustomerDuplicateData(
                         primary_customer=primary,
                         duplicate_customer=duplicate,
                         confidence=confidence,
@@ -235,28 +267,13 @@ def list_customer_duplicates(
                         matching_fields=matching_fields,
                         matching_signals=matching_signals,
                     )
-
-    for bucket in grouped_name_avatar.values():
-        if len(bucket) < 2:
-            continue
-        for index, first in enumerate(bucket):
-            for second in bucket[index + 1 :]:
-                confidence_reason = _duplicate_signals(first, second)
-                if confidence_reason is None:
-                    continue
-                confidence, reason, matching_fields, matching_signals = confidence_reason
-                primary, duplicate = _duplicate_primary_duplicate_pair(first, second)
-                key = _pair_key(primary.id, duplicate.id)
-                existing = pair_map.get(key)
-                if existing is None or confidence > existing.confidence:
-                    pair_map[key] = CustomerDuplicateData(
-                        primary_customer=primary,
-                        duplicate_customer=duplicate,
-                        confidence=confidence,
-                        reason=reason,
-                        matching_fields=matching_fields,
-                        matching_signals=matching_signals,
-                    )
+                    existing = pair_map.get(canonical_key)
+                    if existing is None or confidence > existing.confidence or (
+                        confidence == existing.confidence
+                        and (primary.id, duplicate.id)
+                        < (existing.primary_customer.id, existing.duplicate_customer.id)
+                    ):
+                        pair_map[canonical_key] = candidate
 
     items = sorted(
         pair_map.values(),
@@ -282,15 +299,6 @@ def _get_merge_by_customer_pair(
             CustomerMerge.primary_customer_id == primary_customer_id,
             CustomerMerge.secondary_customer_id == secondary_customer_id,
         )
-        .order_by(CustomerMerge.created_at.desc(), CustomerMerge.id.desc())
-        .first()
-    )
-
-
-def _get_merge_by_secondary_customer(session: Session, secondary_customer_id: int) -> CustomerMerge | None:
-    return (
-        session.query(CustomerMerge)
-        .filter(CustomerMerge.secondary_customer_id == secondary_customer_id)
         .order_by(CustomerMerge.created_at.desc(), CustomerMerge.id.desc())
         .first()
     )
@@ -426,55 +434,31 @@ def merge_customers(
     if existing_merge_by_pair is not None:
         return CustomerMergeData(merge=existing_merge_by_pair, primary_customer=primary, secondary_customer=secondary)
 
-    primary_customer_pk = resolve_customer_for_conversation(session, primary)
-    secondary_customer_pk = resolve_customer_for_conversation(session, secondary)
+    selected_secondary_was_merged = (
+        session.query(CustomerMerge.id)
+        .filter(
+            CustomerMerge.facebook_page_id == page_obj.id,
+            CustomerMerge.secondary_conversation_id == secondary.id,
+        )
+        .first()
+        is not None
+    )
+    if selected_secondary_was_merged:
+        raise ValueError("Selected secondary Conversation has already been merged")
 
-    primary_customer = session.get(Customer, primary_customer_pk)
-    secondary_customer = session.get(Customer, secondary_customer_pk)
-    if primary_customer is None or secondary_customer is None:
+    if primary.customer_id is None:
+        resolve_customer_for_conversation(session, primary)
+    if secondary.customer_id is None:
+        resolve_customer_for_conversation(session, secondary)
+    if primary.customer_id is None or secondary.customer_id is None:
         return None
 
+    primary_customer = resolve_root_customer(session, primary.customer_id)
+    secondary_customer = resolve_root_customer(session, secondary.customer_id)
+    if primary_customer is None or secondary_customer is None:
+        return None
     if primary_customer.id == secondary_customer.id:
-        # The two conversations already belong to the same Customer (e.g. a
-        # prior merge already unified them). Nothing left to transfer;
-        # return the most recent merge record for this pair if one exists,
-        # otherwise treat it as a no-op success.
-        existing = _get_merge_by_customer_pair(session, primary_customer.id, secondary_customer.id)
-        if existing is not None:
-            return CustomerMergeData(merge=existing, primary_customer=primary, secondary_customer=secondary)
-        confidence, reason, matching_fields, matching_signals = (
-            _duplicate_signals(primary, secondary) or (0.0, "Already the same customer", [], [])
-        )
-        merge = CustomerMerge(
-            facebook_page_id=page_obj.id,
-            primary_conversation_id=primary.id,
-            secondary_conversation_id=secondary.id,
-            primary_customer_id=primary_customer.id,
-            secondary_customer_id=secondary_customer.id,
-            merged_by_user_id=user.id,
-            duplicate_confidence=confidence,
-            duplicate_reason=reason,
-            matching_fields=matching_fields,
-            matching_signals=matching_signals,
-        )
-        session.add(merge)
-        session.commit()
-        session.refresh(merge)
-        return CustomerMergeData(merge=merge, primary_customer=primary, secondary_customer=secondary)
-
-    if secondary_customer.merged_into_customer_id is not None:
-        if secondary_customer.merged_into_customer_id == primary_customer.id:
-            existing = _get_merge_by_customer_pair(session, primary_customer.id, secondary_customer.id)
-            if existing is not None:
-                return CustomerMergeData(merge=existing, primary_customer=primary, secondary_customer=secondary)
-        else:
-            raise ValueError("Secondary customer has already been merged into a different primary customer")
-
-    prior_merge = _get_merge_by_secondary_customer(session, secondary_customer.id)
-    if prior_merge is not None and prior_merge.primary_customer_id != primary_customer.id:
-        raise ValueError("Secondary customer has already been merged into a different primary customer")
-    if prior_merge is not None and prior_merge.primary_customer_id == primary_customer.id:
-        return CustomerMergeData(merge=prior_merge, primary_customer=primary, secondary_customer=secondary)
+        raise ValueError("Conversations already belong to the same canonical Customer")
 
     # Check if this exact merge pair (primary, secondary) already exists — idempotency
     existing_merge = _get_merge_by_customer_pair(session, primary_customer.id, secondary_customer.id)
@@ -627,6 +611,18 @@ def merge_customers(
 
     try:
         session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing_merge = _get_merge_by_customer_pair(
+            session, primary_customer.id, secondary_customer.id
+        )
+        if existing_merge is None:
+            raise
+        return CustomerMergeData(
+            merge=existing_merge,
+            primary_customer=primary,
+            secondary_customer=secondary,
+        )
     except Exception:
         session.rollback()
         raise

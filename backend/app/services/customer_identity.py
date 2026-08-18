@@ -36,17 +36,18 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC)
 
 
-def _resolve_root_customer(session: Session, customer_id: int) -> Customer | None:
+def resolve_root_customer(session: Session, customer_id: int) -> Customer | None:
+    """Resolve a canonical Customer root and reject corrupted merge cycles."""
     current = session.get(Customer, customer_id)
     seen: set[int] = set()
-    while (
-        current is not None
-        and current.merged_into_customer_id is not None
-        and current.id not in seen
-    ):
+    while current is not None:
+        if current.id in seen:
+            raise CustomerIdentityConsistencyError("Customer merge cycle detected")
         seen.add(current.id)
+        if current.merged_into_customer_id is None:
+            return current
         current = session.get(Customer, current.merged_into_customer_id)
-    return current
+    return None
 
 
 def _find_customer_identity(
@@ -211,7 +212,7 @@ def resolve_customer_for_conversation(session: Session, conversation) -> int:
     )
 
     if conversation.customer_id is not None:
-        conversation_root = _resolve_root_customer(session, conversation.customer_id)
+        conversation_root = resolve_root_customer(session, conversation.customer_id)
         if conversation_root is None:
             raise CustomerIdentityConsistencyError("Conversation references a missing Customer")
 
@@ -227,7 +228,7 @@ def resolve_customer_for_conversation(session: Session, conversation) -> int:
                 customer=conversation_root,
             )
 
-        identity_root = _resolve_root_customer(session, identity.customer_id)
+        identity_root = resolve_root_customer(session, identity.customer_id)
         if identity_root is None or identity_root.id != conversation_root.id:
             raise CustomerIdentityConsistencyError(
                 "Scoped CustomerIdentity belongs to a different Customer"
@@ -261,7 +262,7 @@ def resolve_customer_for_conversation(session: Session, conversation) -> int:
         display_name=conversation.customer_name,
         avatar_url=conversation.customer_avatar_url,
     )
-    identity_root = _resolve_root_customer(session, identity.customer_id)
+    identity_root = resolve_root_customer(session, identity.customer_id)
     if identity_root is None:
         raise CustomerIdentityConsistencyError(
             "Scoped CustomerIdentity references a missing Customer"

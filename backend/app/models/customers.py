@@ -183,6 +183,11 @@ class CustomerMerge(Base):
     __tablename__ = "customer_merges"
     __table_args__ = (
         UniqueConstraint("primary_conversation_id", "secondary_conversation_id", name="uq_customer_merges_pair"),
+        UniqueConstraint(
+            "primary_customer_id",
+            "secondary_customer_id",
+            name="uq_customer_merges_customer_pair",
+        ),
         Index("ix_customer_merges_facebook_page_id", "facebook_page_id"),
         Index("ix_customer_merges_primary_conversation_id", "primary_conversation_id"),
         Index("ix_customer_merges_secondary_conversation_id", "secondary_conversation_id"),
