@@ -32,6 +32,7 @@ export type OrderListItem = {
   discount_amount: string;
   shipping_fee: string;
   total_amount: string;
+  item_count: number;
   shipping_address: string | null;
   note: string | null;
   created_at: string;
@@ -47,4 +48,10 @@ export type OrderResponse = OrderListItem & {
 export type OrderListResponse = {
   items: OrderListItem[];
   meta: PaginationMeta;
+};
+
+export type CustomerOrderSummary = {
+  order_count: number;
+  total_spend: string;
+  latest_order_at: string | null;
 };

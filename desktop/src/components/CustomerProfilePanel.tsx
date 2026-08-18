@@ -13,13 +13,13 @@ import { useQuery } from "@tanstack/react-query";
 import { Alert, Avatar, Badge, Button, Empty, Input, List, Pagination, Select, Space, Spin, Statistic, Tag, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
-import { listCustomerOrders } from "../services/orderService";
+import { getCustomerOrderSummary, getOrder, listCustomerOrders } from "../services/orderService";
 import type {
   CustomerProfileResponse,
   CustomerNoteSaveRequest,
   CustomerTag
 } from "../types/customer";
-import type { OrderListItem, OrderStatus } from "../types/order";
+import type { CustomerOrderSummary, OrderListItem, OrderResponse, OrderStatus } from "../types/order";
 
 const ORDER_PAGE_SIZE = 5;
 const ORDER_STATUS_OPTIONS: Array<{ label: string; value: "all" | OrderStatus }> = [
@@ -69,6 +69,7 @@ export function CustomerProfilePanel({
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
   const [orderPage, setOrderPage] = useState(1);
   const [orderStatus, setOrderStatus] = useState<"all" | OrderStatus>("all");
+  const [selectedOrderUuid, setSelectedOrderUuid] = useState<string | null>(null);
 
   const conversation = profile?.conversation ?? null;
   const customer = profile?.customer ?? null;
@@ -108,6 +109,7 @@ export function CustomerProfilePanel({
   useEffect(() => {
     setOrderPage(1);
     setOrderStatus("all");
+    setSelectedOrderUuid(null);
   }, [currentPageId, customerUuid]);
 
   const ordersQuery = useQuery({
@@ -119,6 +121,18 @@ export function CustomerProfilePanel({
         status: orderStatusParam
       }),
     enabled: Boolean(currentPageId && customerUuid)
+  });
+
+  const orderSummaryQuery = useQuery({
+    queryKey: ["customer-order-summary", currentPageId, customerUuid],
+    queryFn: () => getCustomerOrderSummary(customerUuid as string),
+    enabled: Boolean(currentPageId && customerUuid)
+  });
+
+  const orderDetailQuery = useQuery({
+    queryKey: ["order-detail", currentPageId, selectedOrderUuid],
+    queryFn: () => getOrder(selectedOrderUuid as string),
+    enabled: Boolean(currentPageId && selectedOrderUuid)
   });
 
   const availableTags = useMemo(() => {
@@ -322,7 +336,15 @@ export function CustomerProfilePanel({
             page={ordersQuery.data?.meta.page ?? orderPage}
             pageSize={ordersQuery.data?.meta.page_size ?? ORDER_PAGE_SIZE}
             loading={ordersQuery.isFetching}
+            summary={orderSummaryQuery.data ?? null}
+            summaryLoading={orderSummaryQuery.isLoading}
+            summaryError={orderSummaryQuery.isError}
+            selectedOrderUuid={selectedOrderUuid}
+            orderDetail={orderDetailQuery.data ?? null}
+            orderDetailLoading={orderDetailQuery.isLoading}
+            orderDetailError={orderDetailQuery.isError}
             onPageChange={setOrderPage}
+            onSelectOrder={(orderUuid) => setSelectedOrderUuid((current) => (current === orderUuid ? null : orderUuid))}
             onOpenConversation={onOpenConversation}
           />
         )}
@@ -492,7 +514,15 @@ function CustomerOrdersList({
   page,
   pageSize,
   loading,
+  summary,
+  summaryLoading,
+  summaryError,
+  selectedOrderUuid,
+  orderDetail,
+  orderDetailLoading,
+  orderDetailError,
   onPageChange,
+  onSelectOrder,
   onOpenConversation
 }: {
   orders: OrderListItem[];
@@ -500,7 +530,15 @@ function CustomerOrdersList({
   page: number;
   pageSize: number;
   loading: boolean;
+  summary: CustomerOrderSummary | null;
+  summaryLoading: boolean;
+  summaryError: boolean;
+  selectedOrderUuid: string | null;
+  orderDetail: OrderResponse | null;
+  orderDetailLoading: boolean;
+  orderDetailError: boolean;
   onPageChange: (page: number) => void;
+  onSelectOrder: (orderUuid: string) => void;
   onOpenConversation?: (conversationId: string) => void;
 }) {
   const totalShown = orders.reduce((sum, order) => sum + parseMoney(order.total_amount), 0);
@@ -513,9 +551,23 @@ function CustomerOrdersList({
   return (
     <div className="customer-orders">
       <div className="customer-orders-summary">
-        <Statistic title="Orders shown" value={orders.length} />
-        <Statistic title="Total shown" value={formatMoney(totalShown, currency)} />
-        <Statistic title="Latest shown" value={latestShown ? latestShown.toLocaleDateString() : "Unknown"} />
+        {summaryLoading ? (
+          <div className="customer-orders-summary-loading">
+            <Spin size="small" />
+          </div>
+        ) : summaryError || !summary ? (
+          <>
+            <Statistic title="Orders shown" value={orders.length} />
+            <Statistic title="Total shown" value={formatMoney(totalShown, currency)} />
+            <Statistic title="Latest shown" value={latestShown ? latestShown.toLocaleDateString() : "Unknown"} />
+          </>
+        ) : (
+          <>
+            <Statistic title="Orders" value={summary.order_count} />
+            <Statistic title="Total spend" value={formatMoney(parseMoney(summary.total_spend), currency)} />
+            <Statistic title="Latest order" value={formatDate(summary.latest_order_at)} />
+          </>
+        )}
       </div>
 
       <List
@@ -538,7 +590,7 @@ function CustomerOrdersList({
                 <OrderField label="Payment" value={labelize(order.payment_status)} />
                 <OrderField label="Shipping" value={labelize(order.shipping_status)} />
                 <OrderField label="Total" value={`${safeText(order.total_amount)} ${safeText(order.currency)}`.trim()} />
-                <OrderField label="Items" value="Not included in summary" />
+                <OrderField label="Items" value={String(order.item_count)} />
               </div>
 
               {order.note ? (
@@ -547,10 +599,24 @@ function CustomerOrdersList({
                 </Typography.Paragraph>
               ) : null}
 
-              {order.conversation_uuid && onOpenConversation ? (
-                <Button size="small" type="link" onClick={() => onOpenConversation(order.conversation_uuid as string)}>
-                  Open conversation
+              <Space wrap>
+                <Button size="small" onClick={() => onSelectOrder(order.uuid)}>
+                  {selectedOrderUuid === order.uuid ? "Hide details" : "View details"}
                 </Button>
+                {order.conversation_uuid && onOpenConversation ? (
+                  <Button size="small" type="link" onClick={() => onOpenConversation(order.conversation_uuid as string)}>
+                    Open conversation
+                  </Button>
+                ) : null}
+              </Space>
+
+              {selectedOrderUuid === order.uuid ? (
+                <OrderDetailPanel
+                  order={orderDetail}
+                  loading={orderDetailLoading}
+                  error={orderDetailError}
+                  onOpenConversation={onOpenConversation}
+                />
               ) : null}
             </article>
           </List.Item>
@@ -581,12 +647,104 @@ function OrderField({ label, value }: { label: string; value: string }) {
   );
 }
 
+function OrderDetailPanel({
+  order,
+  loading,
+  error,
+  onOpenConversation
+}: {
+  order: OrderResponse | null;
+  loading: boolean;
+  error: boolean;
+  onOpenConversation?: (conversationId: string) => void;
+}) {
+  if (loading) {
+    return (
+      <div className="customer-order-detail">
+        <Spin size="small" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return <Alert type="error" showIcon message="Could not load order details." />;
+  }
+
+  if (!order) {
+    return <Empty description="No order detail loaded" />;
+  }
+
+  return (
+    <div className="customer-order-detail">
+      <div className="customer-order-detail-grid">
+        <OrderField label="Subtotal" value={`${safeText(order.subtotal_amount)} ${safeText(order.currency)}`.trim()} />
+        <OrderField label="Discount" value={`${safeText(order.discount_amount)} ${safeText(order.currency)}`.trim()} />
+        <OrderField label="Shipping fee" value={`${safeText(order.shipping_fee)} ${safeText(order.currency)}`.trim()} />
+        <OrderField label="Total" value={`${safeText(order.total_amount)} ${safeText(order.currency)}`.trim()} />
+      </div>
+
+      {order.shipping_address ? (
+        <div>
+          <span className="messenger-profile-label">Shipping address</span>
+          <Typography.Text>{order.shipping_address}</Typography.Text>
+        </div>
+      ) : null}
+
+      {order.note ? (
+        <div>
+          <span className="messenger-profile-label">Order note</span>
+          <Typography.Paragraph className="customer-order-note">{order.note}</Typography.Paragraph>
+        </div>
+      ) : null}
+
+      <div>
+        <span className="messenger-profile-label">Items</span>
+        {order.items.length === 0 ? (
+          <Empty description="No items found for this order" />
+        ) : (
+          <div className="customer-order-items">
+            {order.items.map((item) => (
+              <div key={item.uuid} className="customer-order-item-row">
+                <div>
+                  <Typography.Text strong>{safeText(item.item_name)}</Typography.Text>
+                  <div className="customer-order-date">{item.sku ? `SKU ${item.sku}` : "No SKU"}</div>
+                  {item.note ? <div className="customer-order-date">{item.note}</div> : null}
+                </div>
+                <div className="customer-order-item-amount">
+                  <Typography.Text>
+                    {item.quantity} x {safeText(item.unit_price)}
+                  </Typography.Text>
+                  <Typography.Text strong>{safeText(item.line_total)}</Typography.Text>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {order.conversation_uuid && onOpenConversation ? (
+        <Button size="small" type="link" onClick={() => onOpenConversation(order.conversation_uuid as string)}>
+          Open linked conversation
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 function formatTimestamp(value: string | null): string {
   if (!value) {
     return "Unknown time";
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function formatDate(value: string | null): string {
+  if (!value) {
+    return "Unknown";
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
 }
 
 function parseMoney(value: string | number | null): number {

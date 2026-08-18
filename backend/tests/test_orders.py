@@ -213,6 +213,7 @@ def test_create_order_calculates_totals_and_snapshots(client: TestClient, sessio
     assert body["discount_amount"] == "1.00"
     assert body["shipping_fee"] == "2.00"
     assert body["total_amount"] == "27.00"
+    assert body["item_count"] == 2
     assert body["shipping_address"] == "123 Test Street"
     assert body["note"] == "Call before delivery"
     assert "id" not in body
@@ -299,6 +300,7 @@ def test_orders_are_page_scoped(client: TestClient, session: Session) -> None:
     body = list_response.json()
     assert body["meta"]["total"] == 1
     assert body["items"][0]["customer_uuid"] == str(alice_customer.public_id)
+    assert body["items"][0]["item_count"] == 2
 
 
 def test_get_order_is_page_scoped(client: TestClient, session: Session) -> None:
@@ -325,7 +327,17 @@ def test_get_order_is_page_scoped(client: TestClient, session: Session) -> None:
 
     response = client.get(f"/api/v1/facebook/orders/{alice_order['uuid']}", headers=_auth(alice))
     assert response.status_code == 200
-    assert response.json()["uuid"] == alice_order["uuid"]
+    detail = response.json()
+    assert detail["uuid"] == alice_order["uuid"]
+    assert detail["item_count"] == 2
+    assert len(detail["items"]) == 2
+    assert detail["items"][0]["item_name"] == "T-shirt"
+    assert detail["items"][0]["quantity"] == 2
+    assert detail["items"][0]["unit_price"] == "10.50"
+    assert detail["items"][0]["line_total"] == "21.00"
+    assert "id" not in detail
+    assert "customer_id" not in detail
+    assert "order_id" not in detail["items"][0]
 
     wrong_page = client.get(f"/api/v1/facebook/orders/{bob_order['uuid']}", headers=_auth(alice))
     assert wrong_page.status_code == 404
@@ -350,6 +362,89 @@ def test_customer_order_history_endpoint(client: TestClient, session: Session) -
     body = response.json()
     assert body["meta"]["total"] == 1
     assert body["items"][0]["customer_uuid"] == str(customer.public_id)
+    assert body["items"][0]["item_count"] == 2
+
+
+def test_order_list_and_history_include_correct_item_counts(client: TestClient, session: Session) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-item-count")
+    _select_page(session, alice, page)
+    customer = _make_customer(session, name="Item Count Customer", email="item-count@example.com")
+    _make_conversation(session, page, psid="psid-order-item-count", customer_id=customer.id)
+
+    first = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json=_order_payload(str(customer.public_id)),
+    )
+    assert first.status_code == 200
+    second = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [{"item_name": "Sticker", "quantity": 1, "unit_price": 3.0}],
+        },
+    )
+    assert second.status_code == 200
+
+    all_orders = client.get("/api/v1/facebook/orders", headers=_auth(alice))
+    assert all_orders.status_code == 200
+    list_counts = {item["uuid"]: item["item_count"] for item in all_orders.json()["items"]}
+    assert list_counts[first.json()["uuid"]] == 2
+    assert list_counts[second.json()["uuid"]] == 1
+
+    history = client.get(f"/api/v1/facebook/customers/{customer.public_id}/orders", headers=_auth(alice))
+    assert history.status_code == 200
+    history_counts = {item["uuid"]: item["item_count"] for item in history.json()["items"]}
+    assert history_counts[first.json()["uuid"]] == 2
+    assert history_counts[second.json()["uuid"]] == 1
+
+
+def test_customer_order_summary_is_page_scoped_and_excludes_cancelled_spend(
+    client: TestClient,
+    session: Session,
+) -> None:
+    alice, bob = _get_users(session)
+    alice_page = _make_page(session, alice, "page-order-summary-alice")
+    bob_page = _make_page(session, bob, "page-order-summary-bob")
+    _select_page(session, alice, alice_page)
+    customer = _make_customer(session, name="Summary Customer", email="summary@example.com")
+    bob_customer = _make_customer(session, name="Bob Summary", email="bob-summary@example.com")
+    _make_conversation(session, alice_page, psid="psid-order-summary-alice", customer_id=customer.id)
+    _make_conversation(session, bob_page, psid="psid-order-summary-bob", customer_id=bob_customer.id)
+
+    active_order = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json=_order_payload(str(customer.public_id)),
+    )
+    assert active_order.status_code == 200
+    cancelled_order = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json=_order_payload(str(customer.public_id)),
+    )
+    assert cancelled_order.status_code == 200
+    cancel_response = client.patch(
+        f"/api/v1/facebook/orders/{cancelled_order.json()['uuid']}",
+        headers=_auth(alice),
+        json={"status": "cancelled"},
+    )
+    assert cancel_response.status_code == 200
+
+    summary = client.get(f"/api/v1/facebook/customers/{customer.public_id}/orders/summary", headers=_auth(alice))
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["order_count"] == 2
+    assert body["total_spend"] == "27.00"
+    assert body["latest_order_at"] is not None
+
+    wrong_page_summary = client.get(
+        f"/api/v1/facebook/customers/{bob_customer.public_id}/orders/summary",
+        headers=_auth(alice),
+    )
+    assert wrong_page_summary.status_code == 404
 
 
 def test_invalid_status_filters_return_422(client: TestClient, session: Session) -> None:

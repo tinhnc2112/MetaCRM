@@ -15,7 +15,7 @@ from app.models.orders import Order, OrderItem
 from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.conversations import PaginatedResult, get_conversation_for_user
 from app.services.facebook.pages import get_current_page
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 MONEY_QUANTUM = Decimal("0.01")
@@ -29,6 +29,13 @@ class OrderTotals:
     subtotal_amount: Decimal
     total_amount: Decimal
     line_totals: list[Decimal]
+
+
+@dataclass(frozen=True)
+class CustomerOrderSummary:
+    order_count: int
+    total_spend: Decimal
+    latest_order_at: datetime | None
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -380,4 +387,40 @@ def get_customer_orders(
         customer_id=customer.id,
         status=status,
         q=q,
+    )
+
+
+def get_customer_order_summary(
+    session: Session,
+    user: User,
+    customer_uuid: str,
+) -> CustomerOrderSummary | None:
+    page_obj = _current_page(session, user)
+    if page_obj is None:
+        return None
+
+    customer = _resolve_customer_for_page(session, user, customer_uuid)
+    if customer is None:
+        return None
+
+    base_filters = (
+        Order.facebook_page_id == page_obj.id,
+        Order.customer_id == customer.id,
+        Order.deleted_at.is_(None),
+    )
+    order_count, latest_order_at = (
+        session.query(func.count(Order.id), func.max(Order.created_at))
+        .filter(*base_filters)
+        .one()
+    )
+    total_spend = (
+        session.query(func.coalesce(func.sum(Order.total_amount), Decimal("0")))
+        .filter(*base_filters, Order.status != "cancelled")
+        .scalar()
+    )
+
+    return CustomerOrderSummary(
+        order_count=int(order_count or 0),
+        total_spend=_money(total_spend),
+        latest_order_at=_utc(latest_order_at),
     )

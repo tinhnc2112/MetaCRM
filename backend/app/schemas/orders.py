@@ -80,6 +80,7 @@ class OrderListItem(BaseModel):
     discount_amount: str
     shipping_fee: str
     total_amount: str
+    item_count: int
     shipping_address: str | None = None
     note: str | None = None
     created_at: datetime
@@ -96,3 +97,8 @@ class OrderListResponse(BaseModel):
     items: list[OrderListItem]
     meta: PaginationMeta
 
+
+class CustomerOrderSummaryResponse(BaseModel):
+    order_count: int
+    total_spend: str
+    latest_order_at: datetime | None = None

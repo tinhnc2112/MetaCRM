@@ -394,6 +394,13 @@ body {
   background: #f8fafc;
 }
 
+.customer-orders-summary-loading {
+  grid-column: 1 / -1;
+  min-height: 54px;
+  display: grid;
+  place-items: center;
+}
+
 .customer-order-item {
   padding-inline: 0 !important;
 }
@@ -431,6 +438,47 @@ body {
 .customer-order-note {
   margin-bottom: 0 !important;
   color: #4b5563;
+}
+
+.customer-order-detail {
+  padding: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #eff6ff 0%, #ffffff 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.customer-order-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.customer-order-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.customer-order-item-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.customer-order-item-amount {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  white-space: nowrap;
 }
 
 .customer-orders-pagination {

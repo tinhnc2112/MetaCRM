@@ -11,6 +11,7 @@ from app.dependencies.auth import require_active_user
 from app.models.auth import User
 from app.schemas.messenger import PaginationMeta
 from app.schemas.orders import (
+    CustomerOrderSummaryResponse,
     OrderCreate,
     OrderItemResponse,
     OrderListItem,
@@ -18,7 +19,14 @@ from app.schemas.orders import (
     OrderResponse,
     OrderUpdate,
 )
-from app.services.facebook.orders import create_order, get_customer_orders, get_order, list_orders, update_order
+from app.services.facebook.orders import (
+    create_order,
+    get_customer_order_summary,
+    get_customer_orders,
+    get_order,
+    list_orders,
+    update_order,
+)
 from app.services.facebook.pages import get_current_page
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -61,6 +69,7 @@ def _serialize_order(order) -> OrderResponse:
         discount_amount=_money(order.discount_amount),
         shipping_fee=_money(order.shipping_fee),
         total_amount=_money(order.total_amount),
+        item_count=len(order.items),
         shipping_address=order.shipping_address,
         note=order.note,
         created_at=order.created_at,
@@ -88,11 +97,32 @@ def _serialize_order_list_item(order) -> OrderListItem:
         discount_amount=_money(order.discount_amount),
         shipping_fee=_money(order.shipping_fee),
         total_amount=_money(order.total_amount),
+        item_count=len(order.items),
         shipping_address=order.shipping_address,
         note=order.note,
         created_at=order.created_at,
         updated_at=order.updated_at,
         cancelled_at=order.cancelled_at,
+    )
+
+
+@router.get("/customers/{customer_uuid}/orders/summary", response_model=CustomerOrderSummaryResponse)
+def customer_order_summary_endpoint(
+    customer_uuid: str,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> CustomerOrderSummaryResponse:
+    if get_current_page(session, current_user) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Facebook page is not selected")
+
+    summary = get_customer_order_summary(session, current_user, customer_uuid)
+    if summary is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+
+    return CustomerOrderSummaryResponse(
+        order_count=summary.order_count,
+        total_spend=_money(summary.total_spend),
+        latest_order_at=summary.latest_order_at,
     )
 
 
