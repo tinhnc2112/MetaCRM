@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from app.models.auth import User
 from app.models.inventory import ProductInventory, StockMovement
+from app.models.orders import Order, OrderItem
 from app.models.products import Product
 from app.schemas.inventory import MAX_STOCK_QUANTITY
 from app.services.facebook.conversations import PaginatedResult
@@ -30,6 +32,13 @@ class InsufficientInventoryError(ValueError):
 
 class InventoryIdempotencyConflictError(ValueError):
     """Raised when an operation key is reused for a different mutation."""
+
+
+@dataclass(frozen=True)
+class TrackedOrderItem:
+    order_item: OrderItem
+    product: Product
+    inventory: ProductInventory
 
 
 def _product_for_current_page(
@@ -286,3 +295,240 @@ def inventory_reconciles(session: Session, inventory: ProductInventory) -> bool:
         .scalar()
     )
     return int(movement_total or 0) == inventory.quantity_on_hand
+
+
+def _products_for_order_items(
+    session: Session, order: Order, items: list[OrderItem]
+) -> dict[int, Product]:
+    product_ids = {item.product_id for item in items if item.product_id is not None}
+    if not product_ids:
+        return {}
+    products = (
+        session.query(Product)
+        .filter(
+            Product.id.in_(product_ids),
+            Product.facebook_page_id == order.facebook_page_id,
+        )
+        .all()
+    )
+    by_id = {product.id: product for product in products}
+    if set(by_id) != product_ids:
+        raise InventoryStateError("Order contains a Product outside its Facebook Page")
+    return by_id
+
+
+def _locked_inventories(
+    session: Session, product_ids: set[int]
+) -> dict[int, ProductInventory]:
+    if not product_ids:
+        return {}
+    inventories = (
+        session.query(ProductInventory)
+        .filter(ProductInventory.product_id.in_(product_ids))
+        .order_by(ProductInventory.product_id.asc())
+        .with_for_update()
+        .all()
+    )
+    by_product = {inventory.product_id: inventory for inventory in inventories}
+    if set(by_product) != product_ids:
+        raise InventoryStateError("A tracked Product has no inventory balance")
+    return by_product
+
+
+def consume_order_inventory(session: Session, user: User, order: Order) -> None:
+    """Consume currently tracked Product stock without committing the caller transaction."""
+    items = sorted(order.items, key=lambda item: item.id)
+    products = _products_for_order_items(session, order, items)
+    tracked_product_ids = {
+        product.id for product in products.values() if product.track_inventory
+    }
+    inventories = _locked_inventories(session, tracked_product_ids)
+    tracked_items = [
+        TrackedOrderItem(item, products[item.product_id], inventories[item.product_id])
+        for item in items
+        if item.product_id is not None and products[item.product_id].track_inventory
+    ]
+    if not tracked_items:
+        return
+
+    item_ids = [record.order_item.id for record in tracked_items]
+    existing_outs = (
+        session.query(StockMovement)
+        .filter(
+            StockMovement.order_item_id.in_(item_ids),
+            StockMovement.movement_type == "ORDER_OUT",
+        )
+        .all()
+    )
+    outs_by_item = {movement.order_item_id: movement for movement in existing_outs}
+    pending: list[TrackedOrderItem] = []
+    required_by_product: dict[int, int] = {}
+    for record in tracked_items:
+        item = record.order_item
+        existing = outs_by_item.get(item.id)
+        expected_key = f"ORDER_CONFIRM:{item.public_id}"
+        if existing is not None:
+            if (
+                existing.order_id != order.id
+                or existing.product_id != record.product.id
+                or existing.quantity_delta != -item.quantity
+                or existing.idempotency_key != expected_key
+            ):
+                raise InventoryStateError("Existing Order stock movement is inconsistent")
+            continue
+        pending.append(record)
+        required_by_product[record.product.id] = (
+            required_by_product.get(record.product.id, 0) + item.quantity
+        )
+
+    for product_id, required in required_by_product.items():
+        if inventories[product_id].quantity_on_hand < required:
+            raise InsufficientInventoryError("Insufficient inventory for one or more products")
+
+    now = datetime.now(UTC)
+    current_by_product = {
+        product_id: inventory.quantity_on_hand for product_id, inventory in inventories.items()
+    }
+    movements: list[StockMovement] = []
+    for record in pending:
+        item = record.order_item
+        quantity_before = current_by_product[record.product.id]
+        quantity_after = quantity_before - item.quantity
+        current_by_product[record.product.id] = quantity_after
+        movements.append(
+            StockMovement(
+                public_id=uuid4(),
+                product_id=record.product.id,
+                order_id=order.id,
+                order_item_id=item.id,
+                movement_type="ORDER_OUT",
+                quantity_delta=-item.quantity,
+                quantity_before=quantity_before,
+                quantity_after=quantity_after,
+                idempotency_key=f"ORDER_CONFIRM:{item.public_id}",
+                note=f"Order {order.order_number} confirmed",
+                created_by_id=user.id,
+                created_at=now,
+            )
+        )
+
+    for product_id, quantity_after in current_by_product.items():
+        inventory = inventories[product_id]
+        inventory.quantity_on_hand = quantity_after
+        inventory.updated_at = now
+        session.add(inventory)
+    session.add_all(movements)
+    session.flush()
+
+
+def restore_order_inventory(session: Session, user: User, order: Order) -> None:
+    """Reverse existing Order OUT movements without committing the caller transaction."""
+    items = sorted(order.items, key=lambda item: item.id)
+    item_by_id = {item.id: item for item in items}
+    if not item_by_id:
+        return
+    outs = (
+        session.query(StockMovement)
+        .filter(
+            StockMovement.order_item_id.in_(item_by_id),
+            StockMovement.movement_type == "ORDER_OUT",
+        )
+        .order_by(StockMovement.order_item_id.asc())
+        .all()
+    )
+    if not outs:
+        return
+
+    product_ids: set[int] = set()
+    for movement in outs:
+        item = item_by_id.get(movement.order_item_id)
+        if (
+            item is None
+            or movement.order_id != order.id
+            or item.product_id != movement.product_id
+            or movement.quantity_delta >= 0
+        ):
+            raise InventoryStateError("Existing Order stock movement is inconsistent")
+        product_ids.add(movement.product_id)
+
+    products = (
+        session.query(Product)
+        .filter(
+            Product.id.in_(product_ids),
+            Product.facebook_page_id == order.facebook_page_id,
+        )
+        .all()
+    )
+    if {product.id for product in products} != product_ids:
+        raise InventoryStateError("Order stock movement belongs to another Facebook Page")
+    inventories = _locked_inventories(session, product_ids)
+
+    existing_restores = (
+        session.query(StockMovement)
+        .filter(
+            StockMovement.order_item_id.in_(item_by_id),
+            StockMovement.movement_type == "ORDER_CANCEL_RESTORE",
+        )
+        .all()
+    )
+    restores_by_item = {movement.order_item_id: movement for movement in existing_restores}
+    pending: list[StockMovement] = []
+    restore_by_product: dict[int, int] = {}
+    for out in outs:
+        item = item_by_id[out.order_item_id]
+        restore_quantity = abs(out.quantity_delta)
+        existing = restores_by_item.get(item.id)
+        expected_key = f"ORDER_CANCEL:{item.public_id}"
+        if existing is not None:
+            if (
+                existing.order_id != order.id
+                or existing.product_id != out.product_id
+                or existing.quantity_delta != restore_quantity
+                or existing.idempotency_key != expected_key
+            ):
+                raise InventoryStateError("Existing Order restoration movement is inconsistent")
+            continue
+        pending.append(out)
+        restore_by_product[out.product_id] = (
+            restore_by_product.get(out.product_id, 0) + restore_quantity
+        )
+
+    for product_id, restore_quantity in restore_by_product.items():
+        if inventories[product_id].quantity_on_hand + restore_quantity > MAX_STOCK_QUANTITY:
+            raise InventoryStateError("Order restoration exceeds supported inventory range")
+
+    now = datetime.now(UTC)
+    current_by_product = {
+        product_id: inventory.quantity_on_hand for product_id, inventory in inventories.items()
+    }
+    movements: list[StockMovement] = []
+    for out in pending:
+        item = item_by_id[out.order_item_id]
+        restore_quantity = abs(out.quantity_delta)
+        quantity_before = current_by_product[out.product_id]
+        quantity_after = quantity_before + restore_quantity
+        current_by_product[out.product_id] = quantity_after
+        movements.append(
+            StockMovement(
+                public_id=uuid4(),
+                product_id=out.product_id,
+                order_id=order.id,
+                order_item_id=item.id,
+                movement_type="ORDER_CANCEL_RESTORE",
+                quantity_delta=restore_quantity,
+                quantity_before=quantity_before,
+                quantity_after=quantity_after,
+                idempotency_key=f"ORDER_CANCEL:{item.public_id}",
+                note=f"Order {order.order_number} cancelled",
+                created_by_id=user.id,
+                created_at=now,
+            )
+        )
+
+    for product_id, quantity_after in current_by_product.items():
+        inventory = inventories[product_id]
+        inventory.quantity_on_hand = quantity_after
+        inventory.updated_at = now
+        session.add(inventory)
+    session.add_all(movements)
+    session.flush()

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from app.core.config import get_settings
@@ -15,10 +15,12 @@ from app.main import app
 from app.models.auth import User
 from app.models.customer_core import Customer
 from app.models.facebook import FacebookAccount, FacebookPage
+from app.models.inventory import ProductInventory, StockMovement
 from app.models.messenger import Conversation
 from app.models.orders import Order, OrderItem
 from app.models.products import Product
 from app.services.facebook.crypto import TokenCipher
+from app.services.facebook.inventory import inventory_reconciles
 from app.services.facebook.pages import select_current_page
 from app.utils.jwt import create_access_token
 from app.utils.password import hash_password
@@ -179,6 +181,52 @@ def _order_payload(customer_uuid: str, *, conversation_uuid: str | None = None) 
     if conversation_uuid is not None:
         payload["conversation_uuid"] = conversation_uuid
     return payload
+
+
+def _make_product(
+    db: Session,
+    page: FacebookPage,
+    *,
+    name: str,
+    tracked: bool = False,
+    active: bool = True,
+) -> Product:
+    product = Product(
+        facebook_page_id=page.id,
+        name=name,
+        sku=f"SKU-{name}",
+        currency="VND",
+        sale_price=Decimal("10.00"),
+        is_active=active,
+        track_inventory=tracked,
+    )
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+    return product
+
+
+def _enable_inventory(
+    client: TestClient, user: User, product: Product, quantity: int
+) -> dict:
+    response = client.post(
+        f"/api/v1/facebook/products/{product.public_id}/inventory/enable",
+        headers=_auth(user),
+        json={"opening_quantity": quantity, "note": "Order integration opening"},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def _order_customer(db: Session, page: FacebookPage, suffix: str) -> Customer:
+    customer = _make_customer(db, name=f"Inventory Buyer {suffix}")
+    _make_conversation(
+        db,
+        page,
+        psid=f"psid-inventory-order-{suffix}",
+        customer_id=customer.id,
+    )
+    return customer
 
 
 def test_create_order_calculates_totals_and_snapshots(client: TestClient, session: Session) -> None:
@@ -942,3 +990,644 @@ def test_customer_order_history_isolated_when_customer_spans_pages(
     assert [item["order_number"] for item in page_b_history.json()["items"]] == [
         "ORD-HISTORY-B"
     ]
+
+
+def test_draft_order_has_no_stock_effect_for_tracked_untracked_or_manual_items(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-draft")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "draft")
+    tracked = _make_product(session, page, name="Draft Tracked")
+    untracked = _make_product(session, page, name="Draft Untracked")
+    _enable_inventory(client, alice, tracked, 10)
+
+    response = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [
+                {"product_uuid": str(tracked.public_id), "quantity": 2},
+                {"product_uuid": str(untracked.public_id), "quantity": 3},
+                {"item_name": "Manual", "quantity": 4, "unit_price": 1},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "draft"
+    assert session.query(ProductInventory).one().quantity_on_hand == 10
+    assert session.query(StockMovement).filter_by(movement_type="ORDER_OUT").count() == 0
+
+
+def test_direct_confirmed_creation_consumes_only_tracked_product(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-direct-confirm")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "direct-confirm")
+    tracked = _make_product(session, page, name="Direct Tracked")
+    untracked = _make_product(session, page, name="Direct Untracked")
+    _enable_inventory(client, alice, tracked, 10)
+
+    response = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "status": "confirmed",
+            "items": [
+                {"product_uuid": str(tracked.public_id), "quantity": 2},
+                {"product_uuid": str(untracked.public_id), "quantity": 3},
+                {"item_name": "Manual", "quantity": 1, "unit_price": 1},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    order = session.query(Order).filter(Order.public_id == UUID(response.json()["uuid"])).one()
+    inventory = session.query(ProductInventory).filter_by(product_id=tracked.id).one()
+    movement = session.query(StockMovement).filter_by(movement_type="ORDER_OUT").one()
+    assert inventory.quantity_on_hand == 8
+    assert movement.order_id == order.id
+    assert movement.product_id == tracked.id
+    assert movement.quantity_delta == -2
+    assert movement.created_by_id == alice.id
+    assert inventory_reconciles(session, inventory)
+
+
+def test_confirm_same_product_rows_sequences_movements_and_retries_once(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-same-product")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "same-product")
+    product = _make_product(session, page, name="Repeated Product")
+    _enable_inventory(client, alice, product, 10)
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [
+                {"product_uuid": str(product.public_id), "quantity": 2},
+                {"product_uuid": str(product.public_id), "quantity": 3},
+            ],
+        },
+    ).json()
+
+    confirmed = client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "confirmed"},
+    )
+    assert confirmed.status_code == 200
+    movements = (
+        session.query(StockMovement)
+        .filter_by(movement_type="ORDER_OUT")
+        .order_by(StockMovement.order_item_id)
+        .all()
+    )
+    assert [(m.quantity_before, m.quantity_after, m.quantity_delta) for m in movements] == [
+        (10, 8, -2),
+        (8, 5, -3),
+    ]
+    assert session.query(ProductInventory).one().quantity_on_hand == 5
+
+    retry = client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "confirmed"},
+    )
+    assert retry.status_code == 200
+    assert session.query(StockMovement).filter_by(movement_type="ORDER_OUT").count() == 2
+    assert session.query(ProductInventory).one().quantity_on_hand == 5
+    rejected = client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "draft"},
+    )
+    assert rejected.status_code == 422
+    assert "confirmed to draft" in rejected.json()["detail"]
+
+
+def test_cancel_restores_actual_out_after_disable_and_archive_exactly_once(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-cancel")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "cancel")
+    product = _make_product(session, page, name="Cancel Product")
+    _enable_inventory(client, alice, product, 10)
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "status": "confirmed",
+            "items": [{"product_uuid": str(product.public_id), "quantity": 3}],
+        },
+    ).json()
+    assert session.query(ProductInventory).one().quantity_on_hand == 7
+    client.post(
+        f"/api/v1/facebook/products/{product.public_id}/inventory/disable", headers=_auth(alice)
+    )
+    client.delete(f"/api/v1/facebook/products/{product.public_id}", headers=_auth(alice))
+
+    cancelled = client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "cancelled"},
+    )
+    assert cancelled.status_code == 200
+    restore = session.query(StockMovement).filter_by(movement_type="ORDER_CANCEL_RESTORE").one()
+    out = session.query(StockMovement).filter_by(movement_type="ORDER_OUT").one()
+    assert restore.quantity_delta == abs(out.quantity_delta) == 3
+    assert restore.quantity_before == 7
+    assert restore.quantity_after == 10
+    assert session.query(ProductInventory).one().quantity_on_hand == 10
+
+    retry = client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "cancelled"},
+    )
+    assert retry.status_code == 200
+    assert (
+        session.query(StockMovement).filter_by(movement_type="ORDER_CANCEL_RESTORE").count()
+        == 1
+    )
+    for status_value in ("confirmed", "draft"):
+        rejected = client.patch(
+            f"/api/v1/facebook/orders/{created['uuid']}",
+            headers=_auth(alice),
+            json={"status": status_value},
+        )
+        assert rejected.status_code == 422
+
+
+def test_draft_cancel_has_no_stock_effect(client: TestClient, session: Session) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-draft-cancel")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "draft-cancel")
+    product = _make_product(session, page, name="Draft Cancel Product")
+    _enable_inventory(client, alice, product, 4)
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [{"product_uuid": str(product.public_id), "quantity": 2}],
+        },
+    ).json()
+    response = client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "cancelled"},
+    )
+    assert response.status_code == 200
+    assert session.query(ProductInventory).one().quantity_on_hand == 4
+    assert session.query(StockMovement).filter(StockMovement.order_id.is_not(None)).count() == 0
+
+
+def test_insufficient_direct_confirm_rolls_back_order_and_all_patch_fields(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-insufficient")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "insufficient")
+    product = _make_product(session, page, name="Low Stock")
+    _enable_inventory(client, alice, product, 2)
+    order_count = session.query(Order).count()
+
+    direct = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "status": "confirmed",
+            "items": [{"product_uuid": str(product.public_id), "quantity": 3}],
+        },
+    )
+    assert direct.status_code == 409
+    assert direct.json()["detail"] == "Insufficient inventory for one or more products"
+    assert session.query(Order).count() == order_count
+    assert session.query(ProductInventory).one().quantity_on_hand == 2
+
+    draft = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "note": "Original",
+            "items": [{"product_uuid": str(product.public_id), "quantity": 3}],
+        },
+    ).json()
+    failed_patch = client.patch(
+        f"/api/v1/facebook/orders/{draft['uuid']}",
+        headers=_auth(alice),
+        json={"status": "confirmed", "payment_status": "paid", "note": "Changed"},
+    )
+    assert failed_patch.status_code == 409
+    stored = session.query(Order).filter(Order.public_id == UUID(draft["uuid"])).one()
+    assert stored.status == "draft"
+    assert stored.payment_status == "unpaid"
+    assert stored.note == "Original"
+    assert session.query(ProductInventory).one().quantity_on_hand == 2
+    assert session.query(StockMovement).filter_by(movement_type="ORDER_OUT").count() == 0
+
+
+def test_confirmation_validates_all_products_before_any_stock_mutation(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-all-or-nothing")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "all-or-nothing")
+    enough = _make_product(session, page, name="Enough")
+    low = _make_product(session, page, name="Low")
+    _enable_inventory(client, alice, enough, 5)
+    _enable_inventory(client, alice, low, 1)
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [
+                {"product_uuid": str(enough.public_id), "quantity": 2},
+                {"product_uuid": str(low.public_id), "quantity": 2},
+            ],
+        },
+    ).json()
+    response = client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "confirmed"},
+    )
+    assert response.status_code == 409
+    balances = {
+        row.product_id: row.quantity_on_hand for row in session.query(ProductInventory).all()
+    }
+    assert balances == {enough.id: 5, low.id: 1}
+    assert session.query(StockMovement).filter_by(movement_type="ORDER_OUT").count() == 0
+
+
+def test_confirmation_uses_current_tracking_and_allows_archived_draft_product(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-tracking-change")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "tracking-change")
+    enabled_later = _make_product(session, page, name="Enabled Later")
+    disabled_later = _make_product(session, page, name="Disabled Later")
+    _enable_inventory(client, alice, disabled_later, 10)
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [
+                {"product_uuid": str(enabled_later.public_id), "quantity": 2},
+                {"product_uuid": str(disabled_later.public_id), "quantity": 3},
+            ],
+        },
+    ).json()
+    _enable_inventory(client, alice, enabled_later, 6)
+    client.post(
+        f"/api/v1/facebook/products/{disabled_later.public_id}/inventory/disable",
+        headers=_auth(alice),
+    )
+    client.delete(
+        f"/api/v1/facebook/products/{enabled_later.public_id}", headers=_auth(alice)
+    )
+
+    response = client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "confirmed"},
+    )
+    assert response.status_code == 200
+    balances = {
+        row.product_id: row.quantity_on_hand for row in session.query(ProductInventory).all()
+    }
+    assert balances == {enabled_later.id: 4, disabled_later.id: 10}
+    outs = session.query(StockMovement).filter_by(movement_type="ORDER_OUT").all()
+    assert [movement.product_id for movement in outs] == [enabled_later.id]
+
+
+def test_historical_confirmed_order_without_out_is_not_consumed_or_restored(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-historical")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "historical")
+    product = _make_product(session, page, name="Historical Product")
+    _enable_inventory(client, alice, product, 9)
+    order = Order(
+        facebook_page_id=page.id,
+        customer_id=customer.id,
+        order_number="ORD-HISTORICAL-STOCK",
+        status="confirmed",
+        subtotal_amount=Decimal("20"),
+        total_amount=Decimal("20"),
+    )
+    session.add(order)
+    session.flush()
+    session.add(
+        OrderItem(
+            order_id=order.id,
+            product_id=product.id,
+            item_name=product.name,
+            quantity=2,
+            unit_price=Decimal("10"),
+            line_total=Decimal("20"),
+        )
+    )
+    session.commit()
+
+    same_state = client.patch(
+        f"/api/v1/facebook/orders/{order.public_id}",
+        headers=_auth(alice),
+        json={"status": "confirmed"},
+    )
+    cancelled = client.patch(
+        f"/api/v1/facebook/orders/{order.public_id}",
+        headers=_auth(alice),
+        json={"status": "cancelled"},
+    )
+    assert same_state.status_code == cancelled.status_code == 200
+    assert session.query(ProductInventory).one().quantity_on_hand == 9
+    assert session.query(StockMovement).filter(StockMovement.order_id.is_not(None)).count() == 0
+
+
+def test_payment_and_shipping_statuses_never_change_inventory(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-status-neutral")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "status-neutral")
+    product = _make_product(session, page, name="Status Neutral")
+    _enable_inventory(client, alice, product, 10)
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "status": "confirmed",
+            "items": [{"product_uuid": str(product.public_id), "quantity": 2}],
+        },
+    ).json()
+    original_count = session.query(StockMovement).count()
+    for payload in (
+        {"payment_status": "paid"},
+        {"payment_status": "refunded"},
+        {"shipping_status": "packed"},
+        {"shipping_status": "shipped"},
+        {"shipping_status": "delivered"},
+        {"shipping_status": "cancelled"},
+    ):
+        response = client.patch(
+            f"/api/v1/facebook/orders/{created['uuid']}",
+            headers=_auth(alice),
+            json=payload,
+        )
+        assert response.status_code == 200
+    assert session.query(ProductInventory).one().quantity_on_hand == 8
+    assert session.query(StockMovement).count() == original_count
+
+
+def test_tracked_product_without_balance_fails_closed(client: TestClient, session: Session) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-missing-balance")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "missing-balance")
+    product = _make_product(session, page, name="Missing Balance", tracked=True)
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [{"product_uuid": str(product.public_id), "quantity": 1}],
+        },
+    ).json()
+    response = client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "confirmed"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "A tracked Product has no inventory balance"
+    stored_order = session.query(Order).filter(Order.public_id == UUID(created["uuid"])).one()
+    session.refresh(stored_order)
+    assert stored_order.status == "draft"
+
+
+def test_inconsistent_order_item_product_page_fails_closed(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page_a = _make_page(session, alice, "page-stock-consistency-a")
+    page_b = _make_page(session, alice, "page-stock-consistency-b")
+    _select_page(session, alice, page_b)
+    foreign_product = _make_product(session, page_b, name="Foreign Inventory")
+    _enable_inventory(client, alice, foreign_product, 5)
+    customer = _order_customer(session, page_a, "page-consistency")
+    order = Order(
+        facebook_page_id=page_a.id,
+        customer_id=customer.id,
+        order_number="ORD-INCONSISTENT-PRODUCT-PAGE",
+        subtotal_amount=Decimal("10"),
+        total_amount=Decimal("10"),
+    )
+    session.add(order)
+    session.flush()
+    session.add(
+        OrderItem(
+            order_id=order.id,
+            product_id=foreign_product.id,
+            item_name=foreign_product.name,
+            quantity=1,
+            unit_price=Decimal("10"),
+            line_total=Decimal("10"),
+        )
+    )
+    session.commit()
+    _select_page(session, alice, page_a)
+
+    response = client.patch(
+        f"/api/v1/facebook/orders/{order.public_id}",
+        headers=_auth(alice),
+        json={"status": "confirmed"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Order contains a Product outside its Facebook Page"
+    assert session.query(ProductInventory).one().quantity_on_hand == 5
+    assert session.query(StockMovement).filter_by(movement_type="ORDER_OUT").count() == 0
+
+
+def test_historical_partial_out_cancellation_restores_only_actual_consumption(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-partial-history")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "partial-history")
+    first = _make_product(session, page, name="Partial First")
+    second = _make_product(session, page, name="Partial Second")
+    _enable_inventory(client, alice, first, 5)
+    _enable_inventory(client, alice, second, 5)
+    order = Order(
+        facebook_page_id=page.id,
+        customer_id=customer.id,
+        order_number="ORD-PARTIAL-HISTORY",
+        status="confirmed",
+        subtotal_amount=Decimal("40"),
+        total_amount=Decimal("40"),
+    )
+    session.add(order)
+    session.flush()
+    first_item = OrderItem(
+        order_id=order.id,
+        product_id=first.id,
+        item_name=first.name,
+        quantity=2,
+        unit_price=Decimal("10"),
+        line_total=Decimal("20"),
+    )
+    second_item = OrderItem(
+        order_id=order.id,
+        product_id=second.id,
+        item_name=second.name,
+        quantity=2,
+        unit_price=Decimal("10"),
+        line_total=Decimal("20"),
+    )
+    session.add_all([first_item, second_item])
+    session.flush()
+    first_inventory = session.query(ProductInventory).filter_by(product_id=first.id).one()
+    first_inventory.quantity_on_hand = 3
+    session.add(
+        StockMovement(
+            public_id=uuid4(),
+            product_id=first.id,
+            order_id=order.id,
+            order_item_id=first_item.id,
+            movement_type="ORDER_OUT",
+            quantity_delta=-2,
+            quantity_before=5,
+            quantity_after=3,
+            idempotency_key=f"ORDER_CONFIRM:{first_item.public_id}",
+            created_by_id=alice.id,
+        )
+    )
+    session.commit()
+
+    response = client.patch(
+        f"/api/v1/facebook/orders/{order.public_id}",
+        headers=_auth(alice),
+        json={"status": "cancelled"},
+    )
+    assert response.status_code == 200
+    balances = {
+        row.product_id: row.quantity_on_hand for row in session.query(ProductInventory).all()
+    }
+    assert balances == {first.id: 5, second.id: 5}
+    restores = session.query(StockMovement).filter_by(movement_type="ORDER_CANCEL_RESTORE").all()
+    assert len(restores) == 1
+    assert restores[0].order_item_id == first_item.id
+
+
+def test_customer_merge_after_confirm_is_inventory_neutral(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-merge")
+    _select_page(session, alice, page)
+    primary = _make_customer(session, name="Stock Merge Primary")
+    secondary = _make_customer(session, name="Stock Merge Primary")
+    primary_conversation = _make_conversation(
+        session,
+        page,
+        psid="psid-stock-merge-primary",
+        customer_id=primary.id,
+        customer_name="Stock Merge Primary",
+        customer_avatar_url="https://img.example.com/stock-merge.png",
+    )
+    secondary_conversation = _make_conversation(
+        session,
+        page,
+        psid="psid-stock-merge-secondary",
+        customer_id=secondary.id,
+        customer_name="Stock Merge Primary",
+        customer_avatar_url="https://img.example.com/stock-merge.png",
+    )
+    product = _make_product(session, page, name="Merge Stock")
+    _enable_inventory(client, alice, product, 10)
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(secondary.public_id),
+            "conversation_uuid": str(secondary_conversation.uuid),
+            "status": "confirmed",
+            "items": [{"product_uuid": str(product.public_id), "quantity": 3}],
+        },
+    ).json()
+    movement = session.query(StockMovement).filter_by(movement_type="ORDER_OUT").one()
+    movement_identity = (movement.public_id, movement.order_id, movement.order_item_id)
+
+    merged = client.post(
+        f"/api/v1/facebook/customers/{primary_conversation.uuid}/merge",
+        headers=_auth(alice),
+        json={"secondary_customer_id": str(secondary_conversation.uuid)},
+    )
+    assert merged.status_code == 200
+    order = session.query(Order).filter(Order.public_id == UUID(created["uuid"])).one()
+    session.refresh(order)
+    movement = session.query(StockMovement).filter_by(movement_type="ORDER_OUT").one()
+    assert order.customer_id == primary.id
+    assert session.query(ProductInventory).one().quantity_on_hand == 7
+    assert (movement.public_id, movement.order_id, movement.order_item_id) == movement_identity
+    assert session.query(StockMovement).count() == 2  # OPENING + ORDER_OUT
+
+
+def test_cancellation_with_missing_balance_fails_without_changing_order(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-stock-cancel-missing-balance")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "cancel-missing-balance")
+    product = _make_product(session, page, name="Cancel Missing Balance")
+    _enable_inventory(client, alice, product, 5)
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "status": "confirmed",
+            "items": [{"product_uuid": str(product.public_id), "quantity": 2}],
+        },
+    ).json()
+    inventory = session.query(ProductInventory).filter_by(product_id=product.id).one()
+    session.delete(inventory)
+    session.commit()
+
+    response = client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "cancelled"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "A tracked Product has no inventory balance"
+    order = session.query(Order).filter(Order.public_id == UUID(created["uuid"])).one()
+    assert order.status == "confirmed"
+    assert session.query(StockMovement).filter_by(movement_type="ORDER_CANCEL_RESTORE").count() == 0

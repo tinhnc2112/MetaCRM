@@ -14,6 +14,7 @@ from app.models.messenger import Conversation
 from app.models.orders import Order, OrderItem
 from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.conversations import PaginatedResult, get_conversation_for_user
+from app.services.facebook.inventory import consume_order_inventory, restore_order_inventory
 from app.services.facebook.pages import get_current_page
 from app.services.facebook.products import resolve_product_for_order_item
 from sqlalchemy import and_, func, or_
@@ -24,6 +25,15 @@ MAX_MONEY = Decimal("9999999999.99")
 ORDER_STATUSES = {"draft", "confirmed", "cancelled"}
 PAYMENT_STATUSES = {"unpaid", "partial", "paid", "refunded"}
 SHIPPING_STATUSES = {"pending", "packed", "shipped", "delivered", "cancelled"}
+ORDER_STATUS_TRANSITIONS = {
+    "draft": {"draft", "confirmed", "cancelled"},
+    "confirmed": {"confirmed", "cancelled"},
+    "cancelled": {"cancelled"},
+}
+
+
+class InvalidOrderTransitionError(ValueError):
+    """Raised when an Order status transition is outside the lifecycle graph."""
 
 
 @dataclass(frozen=True)
@@ -118,7 +128,9 @@ def _resolve_customer_for_page(session: Session, user: User, customer_uuid: str)
     return customer
 
 
-def _resolve_order_for_page(session: Session, user: User, order_uuid: str) -> Order | None:
+def _resolve_order_for_page(
+    session: Session, user: User, order_uuid: str, *, lock: bool = False
+) -> Order | None:
     page = _current_page(session, user)
     if page is None:
         return None
@@ -126,7 +138,7 @@ def _resolve_order_for_page(session: Session, user: User, order_uuid: str) -> Or
         public_id = UUID(order_uuid)
     except ValueError:
         return None
-    return (
+    query = (
         session.query(Order)
         .filter(
             Order.public_id == public_id,
@@ -134,8 +146,10 @@ def _resolve_order_for_page(session: Session, user: User, order_uuid: str) -> Or
             Order.deleted_at.is_(None),
             _order_conversation_is_page_consistent(page.id),
         )
-        .first()
     )
+    if lock:
+        query = query.with_for_update()
+    return query.first()
 
 
 def _validate_status(status: str, allowed: set[str], field_name: str) -> str:
@@ -143,6 +157,28 @@ def _validate_status(status: str, allowed: set[str], field_name: str) -> str:
     if cleaned not in allowed:
         raise ValueError(f"Invalid {field_name}")
     return cleaned
+
+
+def _apply_order_status_transition(
+    session: Session,
+    user: User,
+    order: Order,
+    next_status: str,
+) -> None:
+    current_status = order.status
+    if next_status not in ORDER_STATUS_TRANSITIONS.get(current_status, set()):
+        raise InvalidOrderTransitionError(
+            f"Order status cannot transition from {current_status} to {next_status}"
+        )
+    if next_status == current_status:
+        return
+    if next_status == "confirmed":
+        consume_order_inventory(session, user, order)
+    elif next_status == "cancelled" and current_status == "confirmed":
+        restore_order_inventory(session, user, order)
+    order.status = next_status
+    if next_status == "cancelled" and order.cancelled_at is None:
+        order.cancelled_at = datetime.now(UTC)
 
 
 def calculate_order_totals(
@@ -282,7 +318,7 @@ def get_order(session: Session, user: User, order_uuid: str) -> Order | None:
     return _resolve_order_for_page(session, user, order_uuid)
 
 
-def create_order(
+def _create_order_impl(
     session: Session,
     user: User,
     *,
@@ -324,13 +360,14 @@ def create_order(
     )
 
     order_uuid = uuid4()
+    requested_status = _validate_status(status, ORDER_STATUSES, "status")
     order = Order(
         public_id=order_uuid,
         facebook_page_id=page_obj.id,
         customer_id=customer.id,
         conversation_id=conversation.id if conversation is not None else None,
         order_number=generate_order_number(page_obj.page_id, order_uuid),
-        status=_validate_status(status, ORDER_STATUSES, "status"),
+        status="draft",
         payment_status=_validate_status(payment_status, PAYMENT_STATUSES, "payment_status"),
         shipping_status=_validate_status(shipping_status, SHIPPING_STATUSES, "shipping_status"),
         currency=order_currency,
@@ -366,29 +403,65 @@ def create_order(
         order_items.append(order_item)
 
     session.add_all(order_items)
+    order.items = order_items
+    session.flush()
+    _apply_order_status_transition(session, user, order, requested_status)
     session.commit()
     session.refresh(order)
     return order
 
 
-def update_order(
+def create_order(
+    session: Session,
+    user: User,
+    *,
+    customer_uuid: str,
+    conversation_uuid: str | None,
+    items: Sequence[Mapping[str, object]],
+    status: str = "draft",
+    payment_status: str = "unpaid",
+    shipping_status: str = "pending",
+    currency: str = "VND",
+    discount_amount: Decimal | int | float | str = Decimal("0"),
+    shipping_fee: Decimal | int | float | str = Decimal("0"),
+    shipping_address: str | None = None,
+    note: str | None = None,
+) -> Order | None:
+    try:
+        return _create_order_impl(
+            session,
+            user,
+            customer_uuid=customer_uuid,
+            conversation_uuid=conversation_uuid,
+            items=items,
+            status=status,
+            payment_status=payment_status,
+            shipping_status=shipping_status,
+            currency=currency,
+            discount_amount=discount_amount,
+            shipping_fee=shipping_fee,
+            shipping_address=shipping_address,
+            note=note,
+        )
+    except Exception:
+        session.rollback()
+        raise
+
+
+def _update_order_impl(
     session: Session,
     user: User,
     order_uuid: str,
     *,
     data: Mapping[str, object],
 ) -> Order | None:
-    order = _resolve_order_for_page(session, user, order_uuid)
+    order = _resolve_order_for_page(session, user, order_uuid, lock=True)
     if order is None:
         return None
 
     if "status" in data and data["status"] is not None:
         next_status = _validate_status(str(data["status"]), ORDER_STATUSES, "status")
-        if order.status == "cancelled" and next_status != "cancelled":
-            raise ValueError("cancelled orders cannot be reopened")
-        order.status = next_status
-        if next_status == "cancelled" and order.cancelled_at is None:
-            order.cancelled_at = datetime.now(UTC)
+        _apply_order_status_transition(session, user, order, next_status)
     if "payment_status" in data and data["payment_status"] is not None:
         order.payment_status = _validate_status(
             str(data["payment_status"]), PAYMENT_STATUSES, "payment_status"
@@ -430,6 +503,20 @@ def update_order(
     session.commit()
     session.refresh(order)
     return order
+
+
+def update_order(
+    session: Session,
+    user: User,
+    order_uuid: str,
+    *,
+    data: Mapping[str, object],
+) -> Order | None:
+    try:
+        return _update_order_impl(session, user, order_uuid, data=data)
+    except Exception:
+        session.rollback()
+        raise
 
 
 def get_customer_orders(

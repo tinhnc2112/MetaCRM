@@ -19,7 +19,9 @@ from app.schemas.orders import (
     OrderResponse,
     OrderUpdate,
 )
+from app.services.facebook.inventory import InsufficientInventoryError, InventoryStateError
 from app.services.facebook.orders import (
+    InvalidOrderTransitionError,
     create_order,
     get_customer_order_summary,
     get_customer_orders,
@@ -220,6 +222,8 @@ def create_order_endpoint(
         )
     except ProductUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except (InsufficientInventoryError, InventoryStateError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -241,9 +245,22 @@ def update_order_endpoint(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
 
     try:
-        order = update_order(session, current_user, order_id, data=payload.model_dump(exclude_unset=True))
+        order = update_order(
+            session,
+            current_user,
+            order_id,
+            data=payload.model_dump(exclude_unset=True),
+        )
+    except InvalidOrderTransitionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except (InsufficientInventoryError, InventoryStateError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
 
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")

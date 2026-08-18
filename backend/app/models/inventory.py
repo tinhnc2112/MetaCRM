@@ -57,6 +57,11 @@ class StockMovement(Base):
     __table_args__ = (
         UniqueConstraint("public_id", name="uq_stock_movements_public_id"),
         UniqueConstraint("idempotency_key", name="uq_stock_movements_idempotency_key"),
+        UniqueConstraint(
+            "order_item_id",
+            "movement_type",
+            name="uq_stock_movements_order_item_movement_type",
+        ),
         CheckConstraint(
             "movement_type IN ('OPENING', 'ADJUSTMENT', 'ORDER_OUT', 'ORDER_CANCEL_RESTORE')",
             name="ck_stock_movements_type",
