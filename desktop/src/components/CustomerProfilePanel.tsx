@@ -23,6 +23,7 @@ import {
   List,
   Modal,
   Pagination,
+  Segmented,
   Select,
   Space,
   Spin,
@@ -33,6 +34,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createOrder, getCustomerOrderSummary, getOrder, listCustomerOrders, updateOrder } from "../services/orderService";
+import { ProductPicker } from "./ProductPicker";
 import type {
   CustomerProfileResponse,
   CustomerNoteSaveRequest,
@@ -41,6 +43,7 @@ import type {
 import type {
   CustomerOrderSummary,
   OrderCreatePayload,
+  OrderItemCreate,
   OrderListItem,
   OrderResponse,
   OrderStatus,
@@ -48,8 +51,11 @@ import type {
   PaymentStatus,
   ShippingStatus
 } from "../types/order";
+import type { ProductListItem } from "../types/product";
 
 const ORDER_PAGE_SIZE = 5;
+const MAX_MONEY = 9_999_999_999.99;
+const MAX_INTEGER_QUANTITY = 2_147_483_647;
 const ORDER_STATUS_OPTIONS: Array<{ label: string; value: "all" | OrderStatus }> = [
   { label: "All", value: "all" },
   { label: "Draft", value: "draft" },
@@ -76,6 +82,9 @@ const SHIPPING_STATUS_OPTIONS: Array<{ label: string; value: ShippingStatus }> =
 ];
 
 type CreateOrderItemDraft = {
+  mode: "product" | "manual";
+  selected_product: ProductListItem | null;
+  price_overridden: boolean;
   item_name: string;
   sku: string;
   quantity: number;
@@ -337,13 +346,7 @@ export function CustomerProfilePanel({
       shipping_fee: createOrderDraft.shipping_fee,
       shipping_address: normaliseOptionalText(createOrderDraft.shipping_address),
       note: normaliseOptionalText(createOrderDraft.note),
-      items: createOrderDraft.items.map((item) => ({
-        item_name: item.item_name.trim(),
-        sku: normaliseOptionalText(item.sku),
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        note: normaliseOptionalText(item.note)
-      }))
+      items: createOrderDraft.items.map(buildOrderItemPayload)
     };
     if (resolvedCreateOrderConversationUuid) {
       payload.conversation_uuid = resolvedCreateOrderConversationUuid;
@@ -651,6 +654,7 @@ export function CustomerProfilePanel({
         draft={createOrderDraft}
         error={createOrderError}
         submitting={createOrderMutation.isPending}
+        currentPageId={currentPageId}
         customerUuid={customerUuid}
         conversationUuid={resolvedCreateOrderConversationUuid}
         onChange={(nextDraft) => {
@@ -830,6 +834,7 @@ function CreateOrderModal({
   draft,
   error,
   submitting,
+  currentPageId,
   customerUuid,
   conversationUuid,
   onChange,
@@ -840,6 +845,7 @@ function CreateOrderModal({
   draft: CreateOrderDraft;
   error: string | null;
   submitting: boolean;
+  currentPageId: string | null;
   customerUuid: string | null;
   conversationUuid: string | null;
   onChange: (draft: CreateOrderDraft) => void;
@@ -868,6 +874,28 @@ function CreateOrderModal({
       return;
     }
     onChange({ ...draft, items: draft.items.filter((_, itemIndex) => itemIndex !== index) });
+  };
+
+  const changeItemMode = (index: number, mode: "product" | "manual") => {
+    const item = draft.items[index];
+    if (!item || item.mode === mode) {
+      return;
+    }
+    if (mode === "manual") {
+      updateItem(index, {
+        mode,
+        item_name: item.selected_product?.name ?? item.item_name,
+        sku: item.selected_product?.sku ?? item.sku,
+        selected_product: null,
+        price_overridden: false
+      });
+      return;
+    }
+    updateItem(index, {
+      mode,
+      selected_product: null,
+      price_overridden: false
+    });
   };
 
   return (
@@ -905,6 +933,7 @@ function CreateOrderModal({
             <span className="messenger-profile-label">Discount amount</span>
             <InputNumber
               min={0}
+              max={MAX_MONEY}
               value={draft.discount_amount}
               onChange={(value) => updateDraft({ discount_amount: normaliseNumberInput(value, 0) })}
               disabled={submitting}
@@ -915,6 +944,7 @@ function CreateOrderModal({
             <span className="messenger-profile-label">Shipping fee</span>
             <InputNumber
               min={0}
+              max={MAX_MONEY}
               value={draft.shipping_fee}
               onChange={(value) => updateDraft({ shipping_fee: normaliseNumberInput(value, 0) })}
               disabled={submitting}
@@ -927,6 +957,7 @@ function CreateOrderModal({
           <span className="messenger-profile-label">Shipping address</span>
           <Input.TextArea
             value={draft.shipping_address}
+            maxLength={5000}
             onChange={(event) => updateDraft({ shipping_address: event.target.value })}
             disabled={submitting}
             autoSize={{ minRows: 2, maxRows: 4 }}
@@ -938,6 +969,7 @@ function CreateOrderModal({
           <span className="messenger-profile-label">Order note</span>
           <Input.TextArea
             value={draft.note}
+            maxLength={5000}
             onChange={(event) => updateDraft({ note: event.target.value })}
             disabled={submitting}
             autoSize={{ minRows: 2, maxRows: 4 }}
@@ -956,29 +988,66 @@ function CreateOrderModal({
                   Remove
                 </Button>
               </div>
+              <Segmented<"product" | "manual">
+                aria-label={`Item ${index + 1} entry mode`}
+                value={item.mode}
+                options={[
+                  { label: "Catalog Product", value: "product" },
+                  { label: "Manual item", value: "manual" }
+                ]}
+                disabled={submitting}
+                onChange={(mode) => changeItemMode(index, mode)}
+              />
+
+              {item.mode === "product" ? (
+                <ProductPicker
+                  inputId={`create-order-product-picker-${index}`}
+                  currentPageId={currentPageId}
+                  orderCurrency={draft.currency}
+                  selectedProduct={item.selected_product}
+                  disabled={submitting}
+                  onSelect={(product) => {
+                    const defaultPrice = Number(product.sale_price);
+                    updateItem(index, {
+                      selected_product: product,
+                      item_name: product.name,
+                      sku: product.sku ?? "",
+                      unit_price: Number.isFinite(defaultPrice) ? defaultPrice : 0,
+                      price_overridden: false
+                    });
+                  }}
+                />
+              ) : (
+                <div className="create-order-grid">
+                  <div>
+                    <span className="messenger-profile-label">Item name</span>
+                    <Input
+                      value={item.item_name}
+                      maxLength={255}
+                      onChange={(event) => updateItem(index, { item_name: event.target.value })}
+                      disabled={submitting}
+                      placeholder="Required"
+                    />
+                  </div>
+                  <div>
+                    <span className="messenger-profile-label">SKU</span>
+                    <Input
+                      value={item.sku}
+                      maxLength={255}
+                      onChange={(event) => updateItem(index, { sku: event.target.value })}
+                      disabled={submitting}
+                      placeholder="Optional"
+                    />
+                  </div>
+                </div>
+              )}
+
               <div className="create-order-grid">
-                <div>
-                  <span className="messenger-profile-label">Item name</span>
-                  <Input
-                    value={item.item_name}
-                    onChange={(event) => updateItem(index, { item_name: event.target.value })}
-                    disabled={submitting}
-                    placeholder="Required"
-                  />
-                </div>
-                <div>
-                  <span className="messenger-profile-label">SKU</span>
-                  <Input
-                    value={item.sku}
-                    onChange={(event) => updateItem(index, { sku: event.target.value })}
-                    disabled={submitting}
-                    placeholder="Optional"
-                  />
-                </div>
                 <div>
                   <span className="messenger-profile-label">Quantity</span>
                   <InputNumber
                     min={1}
+                    max={MAX_INTEGER_QUANTITY}
                     precision={0}
                     step={1}
                     value={item.quantity}
@@ -991,17 +1060,37 @@ function CreateOrderModal({
                   <span className="messenger-profile-label">Unit price</span>
                   <InputNumber
                     min={0}
+                    max={MAX_MONEY}
                     value={item.unit_price}
-                    onChange={(value) => updateItem(index, { unit_price: normaliseNumberInput(value, 0) })}
+                    onChange={(value) => {
+                      const unitPrice = normaliseNumberInput(value, 0);
+                      const defaultPrice = item.selected_product
+                        ? Number(item.selected_product.sale_price)
+                        : null;
+                      updateItem(index, {
+                        unit_price: unitPrice,
+                        price_overridden:
+                          item.mode === "product" &&
+                          defaultPrice !== null &&
+                          Number.isFinite(defaultPrice) &&
+                          unitPrice !== defaultPrice
+                      });
+                    }}
                     disabled={submitting}
                     className="create-order-number-input"
                   />
+                  {item.mode === "product" && item.selected_product && item.price_overridden ? (
+                    <Typography.Text type="warning" className="create-order-price-override">
+                      Override; catalog price is {formatMoney(Number(item.selected_product.sale_price), item.selected_product.currency)}
+                    </Typography.Text>
+                  ) : null}
                 </div>
               </div>
               <div>
                 <span className="messenger-profile-label">Item note</span>
                 <Input
                   value={item.note}
+                  maxLength={5000}
                   onChange={(event) => updateItem(index, { note: event.target.value })}
                   disabled={submitting}
                   placeholder="Optional"
@@ -1338,6 +1427,9 @@ function OrderDetailPanel({
 
 function buildEmptyOrderItemDraft(): CreateOrderItemDraft {
   return {
+    mode: "manual",
+    selected_product: null,
+    price_overridden: false,
     item_name: "",
     sku: "",
     quantity: 1,
@@ -1386,24 +1478,74 @@ function validateCreateOrderDraft(draft: CreateOrderDraft): string | null {
   if (draft.items.length === 0) {
     return "Add at least one order item.";
   }
-  if (!draft.currency.trim()) {
+  const orderCurrency = draft.currency.trim().toUpperCase();
+  if (!orderCurrency) {
     return "Currency is required.";
+  }
+  if (orderCurrency.length > 8) {
+    return "Currency must be 8 characters or fewer.";
   }
   if (!Number.isFinite(draft.discount_amount) || draft.discount_amount < 0) {
     return "Discount amount cannot be negative.";
   }
+  if (draft.discount_amount > MAX_MONEY) {
+    return "Discount amount exceeds the supported limit.";
+  }
   if (!Number.isFinite(draft.shipping_fee) || draft.shipping_fee < 0) {
     return "Shipping fee cannot be negative.";
   }
+  if (draft.shipping_fee > MAX_MONEY) {
+    return "Shipping fee exceeds the supported limit.";
+  }
+  if (draft.shipping_address.length > 5000) {
+    return "Shipping address must be 5,000 characters or fewer.";
+  }
+  if (draft.note.length > 5000) {
+    return "Order note must be 5,000 characters or fewer.";
+  }
   for (const [index, item] of draft.items.entries()) {
-    if (!item.item_name.trim()) {
-      return `Item ${index + 1} needs a name.`;
+    if (item.mode === "product") {
+      if (!item.selected_product?.uuid) {
+        return `Item ${index + 1} needs a Catalog Product.`;
+      }
+      if (!item.selected_product.is_active) {
+        return `Item ${index + 1} Product is inactive. Choose another Product or switch to Manual.`;
+      }
+      if (item.selected_product.currency.toUpperCase() !== orderCurrency) {
+        return `Item ${index + 1} Product currency must match Order currency ${orderCurrency}.`;
+      }
+      const catalogPrice = Number(item.selected_product.sale_price);
+      if (!Number.isFinite(catalogPrice) || catalogPrice < 0 || catalogPrice > MAX_MONEY) {
+        return `Item ${index + 1} Product has an invalid catalog price.`;
+      }
+    } else {
+      if (!item.item_name.trim()) {
+        return `Item ${index + 1} needs a name.`;
+      }
+      if (item.item_name.trim().length > 255) {
+        return `Item ${index + 1} name must be 255 characters or fewer.`;
+      }
+      if (item.sku.trim().length > 255) {
+        return `Item ${index + 1} SKU must be 255 characters or fewer.`;
+      }
     }
     if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
       return `Item ${index + 1} quantity must be a whole number greater than 0.`;
     }
+    if (item.quantity > MAX_INTEGER_QUANTITY) {
+      return `Item ${index + 1} quantity exceeds the supported limit.`;
+    }
     if (!Number.isFinite(item.unit_price) || item.unit_price < 0) {
       return `Item ${index + 1} unit price cannot be negative.`;
+    }
+    if (item.unit_price > MAX_MONEY) {
+      return `Item ${index + 1} unit price exceeds the supported limit.`;
+    }
+    if (item.quantity * item.unit_price > MAX_MONEY) {
+      return `Item ${index + 1} line total exceeds the supported limit.`;
+    }
+    if (item.note.length > 5000) {
+      return `Item ${index + 1} note must be 5,000 characters or fewer.`;
     }
   }
   const preview = calculatePreviewTotals(draft);
@@ -1413,7 +1555,29 @@ function validateCreateOrderDraft(draft: CreateOrderDraft): string | null {
   if (preview.total < 0) {
     return "Total preview cannot be negative.";
   }
+  if (preview.subtotal > MAX_MONEY || preview.total > MAX_MONEY) {
+    return "Order total exceeds the supported limit.";
+  }
   return null;
+}
+
+function buildOrderItemPayload(item: CreateOrderItemDraft): OrderItemCreate {
+  const note = normaliseOptionalText(item.note);
+  if (item.mode === "product" && item.selected_product) {
+    return {
+      product_uuid: item.selected_product.uuid,
+      quantity: item.quantity,
+      ...(item.price_overridden ? { unit_price: item.unit_price } : {}),
+      note
+    };
+  }
+  return {
+    item_name: item.item_name.trim(),
+    sku: normaliseOptionalText(item.sku),
+    quantity: item.quantity,
+    unit_price: item.unit_price,
+    note
+  };
 }
 
 function calculatePreviewTotals(draft: CreateOrderDraft): { subtotal: number; total: number } {
@@ -1442,6 +1606,9 @@ function getReadableError(
     const response = (error as { response?: { data?: { detail?: unknown } } }).response;
     const detail = response?.data?.detail;
     if (typeof detail === "string") {
+      if (detail === "Product not found") {
+        return "A selected Product is inactive, archived, unavailable, or belongs to another Page. Choose another Product or switch that item to Manual.";
+      }
       return detail;
     }
     if (Array.isArray(detail)) {

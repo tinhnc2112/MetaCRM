@@ -542,6 +542,48 @@ body {
   gap: 12px;
 }
 
+.product-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.product-picker-label {
+  color: #374151;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.product-picker .ant-select {
+  width: 100%;
+}
+
+.product-picker-selection {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid #d1fae5;
+  border-radius: 8px;
+  background: #ecfdf5;
+}
+
+.product-picker-selection-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.create-order-price-override {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
 .create-order-preview {
   padding: 12px;
   border: 1px solid #dbeafe;

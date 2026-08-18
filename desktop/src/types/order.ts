@@ -6,6 +6,7 @@ export type ShippingStatus = "pending" | "packed" | "shipped" | "delivered" | "c
 
 export type OrderItem = {
   uuid: string;
+  product_uuid: string | null;
   item_name: string;
   sku: string | null;
   quantity: number;
@@ -16,13 +17,23 @@ export type OrderItem = {
   updated_at: string;
 };
 
-export type OrderItemCreate = {
+export type ManualOrderItemCreate = {
+  product_uuid?: null;
   item_name: string;
   sku?: string | null;
   quantity: number;
   unit_price: number;
   note?: string | null;
 };
+
+export type ProductOrderItemCreate = {
+  product_uuid: string;
+  quantity: number;
+  unit_price?: number;
+  note?: string | null;
+};
+
+export type OrderItemCreate = ManualOrderItemCreate | ProductOrderItemCreate;
 
 export type OrderCreatePayload = {
   customer_uuid: string;
