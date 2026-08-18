@@ -103,6 +103,7 @@ type CreateOrderDraft = {
 
 type CreateOrderMutationInput = {
   payload: OrderCreatePayload;
+  idempotencyKey: string;
   pageId: string;
   customerUuid: string;
   contextKey: string;
@@ -215,6 +216,7 @@ export function CustomerProfilePanel({
   ]);
   const createOrderContextRef = useRef(createOrderContextKey);
   const createOrderSubmitLockRef = useRef(false);
+  const createOrderIdempotencyRef = useRef<{ payloadSnapshot: string; key: string } | null>(null);
   const orderUpdateContextKey = JSON.stringify([currentPageId, customerUuid, selectedOrderUuid]);
   const orderUpdateContextRef = useRef(orderUpdateContextKey);
   const orderUpdateSubmitLockRef = useRef(false);
@@ -228,6 +230,7 @@ export function CustomerProfilePanel({
     setCreateOrderOpen(false);
     setCreateOrderError(null);
     setCreateOrderDraft(buildEmptyOrderDraft());
+    createOrderIdempotencyRef.current = null;
     setOrderUpdateError(null);
   }, [currentPageId, customerUuid, resolvedCreateOrderConversationUuid]);
 
@@ -255,7 +258,8 @@ export function CustomerProfilePanel({
   });
 
   const createOrderMutation = useMutation({
-    mutationFn: ({ payload }: CreateOrderMutationInput) => createOrder(payload),
+    mutationFn: ({ payload, idempotencyKey }: CreateOrderMutationInput) =>
+      createOrder(payload, idempotencyKey),
     onSuccess: async (order, input) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["customer-orders", input.pageId, input.customerUuid] }),
@@ -268,6 +272,7 @@ export function CustomerProfilePanel({
       setCreateOrderOpen(false);
       setCreateOrderError(null);
       setCreateOrderDraft(buildEmptyOrderDraft());
+      createOrderIdempotencyRef.current = null;
       setOrderPage(1);
       setOrderStatus("all");
       setSelectedOrderUuid(order.uuid);
@@ -280,7 +285,14 @@ export function CustomerProfilePanel({
         });
       }
       if (createOrderContextRef.current === input.contextKey) {
-        setCreateOrderError(getReadableError(error));
+        if (isIdempotencyConflict(error)) {
+          createOrderIdempotencyRef.current = null;
+        }
+        setCreateOrderError(
+          isAmbiguousCreateOrderFailure(error)
+            ? "Order creation result is uncertain. Retry will safely reuse the same request."
+            : getReadableError(error)
+        );
       }
     }
   });
@@ -364,11 +376,20 @@ export function CustomerProfilePanel({
       payload.conversation_uuid = resolvedCreateOrderConversationUuid;
     }
 
+    const payloadSnapshot = JSON.stringify(payload);
+    const previousAttempt = createOrderIdempotencyRef.current;
+    const idempotencyKey =
+      previousAttempt?.payloadSnapshot === payloadSnapshot
+        ? previousAttempt.key
+        : crypto.randomUUID();
+    createOrderIdempotencyRef.current = { payloadSnapshot, key: idempotencyKey };
+
     setCreateOrderError(null);
     createOrderSubmitLockRef.current = true;
     try {
       await createOrderMutation.mutateAsync({
         payload,
+        idempotencyKey,
         pageId: currentPageId,
         customerUuid,
         contextKey: createOrderContextKey
@@ -604,6 +625,7 @@ export function CustomerProfilePanel({
               disabled={!customerUuid || !currentPageId || createOrderMutation.isPending}
               onClick={() => {
                 setCreateOrderError(null);
+                createOrderIdempotencyRef.current = null;
                 setCreateOrderOpen(true);
               }}
             >
@@ -678,6 +700,7 @@ export function CustomerProfilePanel({
             setCreateOrderOpen(false);
             setCreateOrderError(null);
             setCreateOrderDraft(buildEmptyOrderDraft());
+            createOrderIdempotencyRef.current = null;
           }
         }}
         onSubmit={() => void handleSubmitOrder()}
@@ -1714,6 +1737,12 @@ function getReadableError(
       response?: { status?: number; data?: { detail?: unknown } };
     }).response;
     const detail = response?.data?.detail;
+    if (
+      response?.status === 409 &&
+      detail === "Idempotency key was already used for a different order request."
+    ) {
+      return detail;
+    }
     if (response?.status === 409) {
       return "Stock changed and is no longer sufficient. Review the selected products and try again.";
     }
@@ -1734,7 +1763,27 @@ function isStockConflict(error: unknown): boolean {
   if (typeof error !== "object" || error === null || !("response" in error)) {
     return false;
   }
-  return (error as { response?: { status?: number } }).response?.status === 409;
+  const response = (error as {
+    response?: { status?: number; data?: { detail?: unknown } };
+  }).response;
+  return response?.status === 409 && !isIdempotencyConflict(error);
+}
+
+function isIdempotencyConflict(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("response" in error)) {
+    return false;
+  }
+  const response = (error as {
+    response?: { status?: number; data?: { detail?: unknown } };
+  }).response;
+  return (
+    response?.status === 409 &&
+    response.data?.detail === "Idempotency key was already used for a different order request."
+  );
+}
+
+function isAmbiguousCreateOrderFailure(error: unknown): boolean {
+  return typeof error === "object" && error !== null && !("response" in error);
 }
 
 function formatTimestamp(value: string | null): string {

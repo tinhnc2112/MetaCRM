@@ -41,8 +41,13 @@ export async function getCustomerOrderSummary(customerUuid: string): Promise<Cus
   return response.data;
 }
 
-export async function createOrder(payload: OrderCreatePayload): Promise<OrderResponse> {
-  const response = await apiClient.post<OrderResponse>("/api/v1/facebook/orders", payload);
+export async function createOrder(
+  payload: OrderCreatePayload,
+  idempotencyKey: string
+): Promise<OrderResponse> {
+  const response = await apiClient.post<OrderResponse>("/api/v1/facebook/orders", payload, {
+    headers: { "Idempotency-Key": idempotencyKey }
+  });
   return response.data;
 }
 

@@ -21,6 +21,7 @@ from app.models.orders import Order, OrderItem
 from app.models.products import Product
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.inventory import inventory_reconciles
+from app.services.facebook.orders import build_order_create_fingerprint
 from app.services.facebook.pages import select_current_page
 from app.utils.jwt import create_access_token
 from app.utils.password import hash_password
@@ -227,6 +228,306 @@ def _order_customer(db: Session, page: FacebookPage, suffix: str) -> Customer:
         customer_id=customer.id,
     )
     return customer
+
+
+def _idempotency_headers(user: User, key: str) -> dict[str, str]:
+    return {**_auth(user), "Idempotency-Key": key}
+
+
+def test_order_creation_exact_retry_replays_one_draft_and_conflicts_on_change(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-idempotency-basic")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "idempotency-basic")
+    key = str(uuid4())
+    payload = _order_payload(str(customer.public_id))
+
+    first = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key.upper()),
+        json=payload,
+    )
+    replay = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, f"  {key}  "),
+        json=payload,
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert first.json()["uuid"] == replay.json()["uuid"]
+    assert first.json()["order_number"] == replay.json()["order_number"]
+    assert session.query(Order).count() == 1
+    assert session.query(OrderItem).count() == len(payload["items"])
+    stored = session.query(Order).one()
+    assert stored.idempotency_key == key
+    assert len(stored.request_fingerprint or "") == 64
+
+    changed_payload = {**payload, "items": [{**payload["items"][0], "quantity": 3}]}
+    conflict = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json=changed_payload,
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == (
+        "Idempotency key was already used for a different order request."
+    )
+    assert session.query(Order).count() == 1
+    assert session.query(OrderItem).count() == len(payload["items"])
+
+
+def test_order_creation_rejects_malformed_idempotency_key(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-idempotency-malformed")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "idempotency-malformed")
+
+    response = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, "not-a-uuid"),
+        json=_order_payload(str(customer.public_id)),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Idempotency-Key must be a valid UUID"
+    assert session.query(Order).count() == 0
+
+
+def test_order_creation_idempotency_header_is_allowed_by_cors(client: TestClient) -> None:
+    response = client.options(
+        "/api/v1/facebook/orders",
+        headers={
+            "Origin": f"chrome-extension://{'a' * 32}",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type,idempotency-key",
+        },
+    )
+
+    assert response.status_code == 200
+    allowed_headers = response.headers["access-control-allow-headers"].lower()
+    assert "idempotency-key" in allowed_headers
+
+
+def test_order_fingerprint_normalizes_defaults_decimals_nulls_and_uuid_case() -> None:
+    customer_uuid = uuid4()
+    product_uuid = uuid4()
+    base = {
+        "customer_uuid": str(customer_uuid),
+        "conversation_uuid": None,
+        "items": [
+            {
+                "product_uuid": str(product_uuid),
+                "quantity": 2,
+                "unit_price": Decimal("30000"),
+                "note": None,
+            }
+        ],
+    }
+    explicit_equivalent = {
+        **base,
+        "customer_uuid": str(customer_uuid).upper(),
+        "items": [
+            {
+                "product_uuid": str(product_uuid).upper(),
+                "item_name": "ignored product snapshot",
+                "sku": "ignored-product-sku",
+                "quantity": 2,
+                "unit_price": Decimal("30000.00"),
+                "note": "   ",
+            }
+        ],
+        "status": "DRAFT",
+        "payment_status": "UNPAID",
+        "shipping_status": "PENDING",
+        "currency": " vnd ",
+        "discount_amount": Decimal("0.00"),
+        "shipping_fee": Decimal("0.0"),
+        "shipping_address": "",
+        "note": None,
+    }
+
+    assert build_order_create_fingerprint(**base) == build_order_create_fingerprint(
+        **explicit_equivalent
+    )
+    reordered = {
+        **base,
+        "items": [
+            base["items"][0],
+            {"item_name": "Manual", "quantity": 1, "unit_price": Decimal("1")},
+        ],
+    }
+    reversed_items = {**reordered, "items": list(reversed(reordered["items"]))}
+    assert build_order_create_fingerprint(**reordered) != build_order_create_fingerprint(
+        **reversed_items
+    )
+
+
+def test_order_creation_key_is_independent_across_pages_and_users(
+    client: TestClient, session: Session
+) -> None:
+    alice, bob = _get_users(session)
+    first_page = _make_page(session, alice, "page-order-idempotency-scope-a")
+    _select_page(session, alice, first_page)
+    first_customer = _order_customer(session, first_page, "scope-a")
+    key = str(uuid4())
+    first = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json=_order_payload(str(first_customer.public_id)),
+    )
+    assert first.status_code == 200
+
+    second_page = _make_page(session, alice, "page-order-idempotency-scope-b")
+    _select_page(session, alice, second_page)
+    second_customer = _order_customer(session, second_page, "scope-b")
+    second = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json=_order_payload(str(second_customer.public_id)),
+    )
+    assert second.status_code == 200
+    assert second.json()["uuid"] != first.json()["uuid"]
+
+    second_page.facebook_account.user_id = bob.id
+    session.commit()
+    _select_page(session, bob, second_page)
+    third = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(bob, key),
+        json=_order_payload(str(second_customer.public_id)),
+    )
+    assert third.status_code == 200
+    assert third.json()["uuid"] not in {first.json()["uuid"], second.json()["uuid"]}
+    assert session.query(Order).count() == 3
+
+
+def test_confirmed_order_idempotency_replay_consumes_inventory_once(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-idempotency-confirmed")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "idempotency-confirmed")
+    product = _make_product(session, page, name="Idempotent Confirmed")
+    _enable_inventory(client, alice, product, 10)
+    key = str(uuid4())
+    payload = {
+        "customer_uuid": str(customer.public_id),
+        "status": "confirmed",
+        "items": [{"product_uuid": str(product.public_id), "quantity": 3}],
+    }
+
+    first = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json=payload,
+    )
+    replay = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json=payload,
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert first.json()["uuid"] == replay.json()["uuid"]
+    assert session.query(Order).count() == 1
+    assert session.query(StockMovement).filter_by(movement_type="ORDER_OUT").count() == 1
+    inventory = session.query(ProductInventory).filter_by(product_id=product.id).one()
+    assert inventory.quantity_on_hand == 7
+    assert inventory_reconciles(session, inventory)
+
+    changed = {
+        **payload,
+        "items": [{"product_uuid": str(product.public_id), "quantity": 4}],
+    }
+    conflict = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json=changed,
+    )
+    assert conflict.status_code == 409
+    session.refresh(inventory)
+    assert inventory.quantity_on_hand == 7
+    assert session.query(StockMovement).filter_by(movement_type="ORDER_OUT").count() == 1
+
+
+def test_mixed_manual_and_untracked_order_replays_one_item_set(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-idempotency-mixed")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "idempotency-mixed")
+    untracked = _make_product(session, page, name="Idempotent Untracked")
+    key = str(uuid4())
+    payload = {
+        "customer_uuid": str(customer.public_id),
+        "items": [
+            {"product_uuid": str(untracked.public_id), "quantity": 2},
+            {"item_name": "Manual", "quantity": 1, "unit_price": 4},
+        ],
+    }
+
+    first = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json=payload,
+    )
+    replay = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json=payload,
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert first.json()["uuid"] == replay.json()["uuid"]
+    assert session.query(Order).count() == 1
+    assert session.query(OrderItem).count() == 2
+    assert session.query(StockMovement).count() == 0
+
+
+def test_failed_stock_request_does_not_consume_creation_key(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-idempotency-stock-retry")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "idempotency-stock-retry")
+    product = _make_product(session, page, name="Idempotent Stock Retry")
+    _enable_inventory(client, alice, product, 2)
+    key = str(uuid4())
+    payload = {
+        "customer_uuid": str(customer.public_id),
+        "status": "confirmed",
+        "items": [{"product_uuid": str(product.public_id), "quantity": 3}],
+    }
+
+    failed = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json=payload,
+    )
+    assert failed.status_code == 409
+    assert session.query(Order).count() == 0
+
+    adjusted = client.post(
+        f"/api/v1/facebook/products/{product.public_id}/inventory/adjustments",
+        headers=_auth(alice),
+        json={"quantity_delta": 3, "note": "Restock", "idempotency_key": str(uuid4())},
+    )
+    assert adjusted.status_code == 200
+    retried = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json=payload,
+    )
+    assert retried.status_code == 200
+    assert session.query(Order).count() == 1
+    assert session.query(ProductInventory).one().quantity_on_hand == 2
 
 
 def test_create_order_calculates_totals_and_snapshots(client: TestClient, session: Session) -> None:

@@ -25,6 +25,12 @@ class Order(Base):
     __tablename__ = "orders"
     __table_args__ = (
         UniqueConstraint("facebook_page_id", "order_number", name="uq_orders_page_order_number"),
+        UniqueConstraint(
+            "facebook_page_id",
+            "created_by_id",
+            "idempotency_key",
+            name="uq_orders_page_creator_idempotency_key",
+        ),
         Index("ix_orders_facebook_page_id", "facebook_page_id"),
         Index("ix_orders_customer_id", "customer_id"),
         Index("ix_orders_order_number", "order_number"),
@@ -56,6 +62,8 @@ class Order(Base):
     shipping_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now

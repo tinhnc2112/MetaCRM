@@ -22,6 +22,7 @@ from app.schemas.orders import (
 from app.services.facebook.inventory import InsufficientInventoryError, InventoryStateError
 from app.services.facebook.orders import (
     InvalidOrderTransitionError,
+    OrderIdempotencyConflictError,
     create_order,
     get_customer_order_summary,
     get_customer_orders,
@@ -31,7 +32,7 @@ from app.services.facebook.orders import (
 )
 from app.services.facebook.pages import get_current_page
 from app.services.facebook.products import ProductUnavailableError
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/facebook", tags=["orders"])
@@ -203,6 +204,7 @@ def create_order_endpoint(
     payload: OrderCreate,
     current_user: Annotated[User, Depends(require_active_user)],
     session: Annotated[Session, Depends(get_db_session)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> OrderResponse:
     try:
         order = create_order(
@@ -219,10 +221,13 @@ def create_order_endpoint(
             shipping_fee=payload.shipping_fee,
             shipping_address=payload.shipping_address,
             note=payload.note,
+            idempotency_key=idempotency_key,
         )
     except ProductUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except (InsufficientInventoryError, InventoryStateError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except OrderIdempotencyConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc

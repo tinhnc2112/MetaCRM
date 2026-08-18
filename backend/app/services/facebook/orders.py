@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
+from enum import Enum
 from uuid import UUID, uuid4
 
 from app.models.auth import User
@@ -18,6 +21,7 @@ from app.services.facebook.inventory import consume_order_inventory, restore_ord
 from app.services.facebook.pages import get_current_page
 from app.services.facebook.products import resolve_product_for_order_item
 from sqlalchemy import and_, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 MONEY_QUANTUM = Decimal("0.01")
@@ -34,6 +38,16 @@ ORDER_STATUS_TRANSITIONS = {
 
 class InvalidOrderTransitionError(ValueError):
     """Raised when an Order status transition is outside the lifecycle graph."""
+
+
+class OrderIdempotencyConflictError(ValueError):
+    """Raised when an Order creation key is reused for a different request."""
+
+
+IDEMPOTENCY_CONFLICT_MESSAGE = (
+    "Idempotency key was already used for a different order request."
+)
+IDEMPOTENCY_CONSTRAINT_NAME = "uq_orders_page_creator_idempotency_key"
 
 
 @dataclass(frozen=True)
@@ -75,6 +89,97 @@ def _normalise_text(value: str | None) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def normalize_order_idempotency_key(value: str | None) -> str | None:
+    """Return the canonical UUID key accepted by POST Order creation."""
+    if value is None:
+        return None
+    try:
+        return str(UUID(value.strip()))
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("Idempotency-Key must be a valid UUID") from exc
+
+
+def _canonical_uuid(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        return str(UUID(str(value)))
+    except ValueError:
+        return str(value)
+
+
+def _canonical_fingerprint_value(value: object) -> object:
+    if isinstance(value, Decimal):
+        return format(_money(value), "f")
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, Enum):
+        return _canonical_fingerprint_value(value.value)
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonical_fingerprint_value(item)
+            for key, item in sorted(value.items(), key=lambda entry: str(entry[0]))
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_canonical_fingerprint_value(item) for item in value]
+    return value
+
+
+def build_order_create_fingerprint(
+    *,
+    customer_uuid: str,
+    conversation_uuid: str | None,
+    items: Sequence[Mapping[str, object]],
+    status: str = "draft",
+    payment_status: str = "unpaid",
+    shipping_status: str = "pending",
+    currency: str = "VND",
+    discount_amount: Decimal | int | float | str = Decimal("0"),
+    shipping_fee: Decimal | int | float | str = Decimal("0"),
+    shipping_address: str | None = None,
+    note: str | None = None,
+) -> str:
+    """Fingerprint the normalized business inputs that drive a new Order."""
+    canonical_items: list[dict[str, object]] = []
+    for item in items:
+        product_uuid = _canonical_uuid(item.get("product_uuid"))
+        canonical_item: dict[str, object] = {
+            "product_uuid": product_uuid,
+            "quantity": int(item["quantity"]),
+            "unit_price": (
+                None if item.get("unit_price") is None else _money(item["unit_price"])
+            ),
+            "note": _normalise_text(item.get("note")),  # type: ignore[arg-type]
+        }
+        if product_uuid is None:
+            canonical_item["item_name"] = _normalise_text(item.get("item_name"))  # type: ignore[arg-type]
+            canonical_item["sku"] = _normalise_text(item.get("sku"))  # type: ignore[arg-type]
+        canonical_items.append(canonical_item)
+
+    canonical_request = _canonical_fingerprint_value(
+        {
+            "customer_uuid": _canonical_uuid(customer_uuid),
+            "conversation_uuid": _canonical_uuid(conversation_uuid),
+            "items": canonical_items,
+            "status": status.strip().lower(),
+            "payment_status": payment_status.strip().lower(),
+            "shipping_status": shipping_status.strip().lower(),
+            "currency": (currency or "VND").strip().upper() or "VND",
+            "discount_amount": _money(discount_amount),
+            "shipping_fee": _money(shipping_fee),
+            "shipping_address": _normalise_text(shipping_address),
+            "note": _normalise_text(note),
+        }
+    )
+    encoded = json.dumps(
+        canonical_request,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _current_page(session: Session, user: User):
@@ -318,6 +423,43 @@ def get_order(session: Session, user: User, order_uuid: str) -> Order | None:
     return _resolve_order_for_page(session, user, order_uuid)
 
 
+def _order_for_idempotency_key(
+    session: Session,
+    *,
+    page_id: int,
+    user_id: int,
+    idempotency_key: str,
+) -> Order | None:
+    return (
+        session.query(Order)
+        .filter(
+            Order.facebook_page_id == page_id,
+            Order.created_by_id == user_id,
+            Order.idempotency_key == idempotency_key,
+        )
+        .first()
+    )
+
+
+def _replay_or_conflict(order: Order, request_fingerprint: str) -> Order:
+    if order.request_fingerprint != request_fingerprint:
+        raise OrderIdempotencyConflictError(IDEMPOTENCY_CONFLICT_MESSAGE)
+    return order
+
+
+def _is_idempotency_unique_violation(exc: IntegrityError) -> bool:
+    message = str(exc.orig).lower()
+    return (
+        IDEMPOTENCY_CONSTRAINT_NAME.lower() in message
+        or (
+            "unique constraint failed" in message
+            and "orders.facebook_page_id" in message
+            and "orders.created_by_id" in message
+            and "orders.idempotency_key" in message
+        )
+    )
+
+
 def _create_order_impl(
     session: Session,
     user: User,
@@ -333,10 +475,24 @@ def _create_order_impl(
     shipping_fee: Decimal | int | float | str = Decimal("0"),
     shipping_address: str | None = None,
     note: str | None = None,
+    idempotency_key: str | None = None,
+    request_fingerprint: str | None = None,
 ) -> Order | None:
     page_obj = _current_page(session, user)
     if page_obj is None:
         return None
+
+    if idempotency_key is not None:
+        if request_fingerprint is None:
+            raise ValueError("request_fingerprint is required with an idempotency key")
+        existing_order = _order_for_idempotency_key(
+            session,
+            page_id=page_obj.id,
+            user_id=user.id,
+            idempotency_key=idempotency_key,
+        )
+        if existing_order is not None:
+            return _replay_or_conflict(existing_order, request_fingerprint)
 
     customer = _resolve_customer_for_page(session, user, customer_uuid)
     if customer is None:
@@ -381,6 +537,8 @@ def _create_order_impl(
         shipping_address=_normalise_text(shipping_address) or customer.default_address,
         note=_normalise_text(note),
         created_by_id=user.id,
+        idempotency_key=idempotency_key,
+        request_fingerprint=request_fingerprint,
     )
     session.add(order)
     session.flush()
@@ -426,7 +584,26 @@ def create_order(
     shipping_fee: Decimal | int | float | str = Decimal("0"),
     shipping_address: str | None = None,
     note: str | None = None,
+    idempotency_key: str | None = None,
 ) -> Order | None:
+    normalized_key = normalize_order_idempotency_key(idempotency_key)
+    request_fingerprint = (
+        build_order_create_fingerprint(
+            customer_uuid=customer_uuid,
+            conversation_uuid=conversation_uuid,
+            items=items,
+            status=status,
+            payment_status=payment_status,
+            shipping_status=shipping_status,
+            currency=currency,
+            discount_amount=discount_amount,
+            shipping_fee=shipping_fee,
+            shipping_address=shipping_address,
+            note=note,
+        )
+        if normalized_key is not None
+        else None
+    )
     try:
         return _create_order_impl(
             session,
@@ -442,7 +619,25 @@ def create_order(
             shipping_fee=shipping_fee,
             shipping_address=shipping_address,
             note=note,
+            idempotency_key=normalized_key,
+            request_fingerprint=request_fingerprint,
         )
+    except IntegrityError as exc:
+        session.rollback()
+        if normalized_key is None or not _is_idempotency_unique_violation(exc):
+            raise
+        page_obj = _current_page(session, user)
+        if page_obj is None:
+            return None
+        winner = _order_for_idempotency_key(
+            session,
+            page_id=page_obj.id,
+            user_id=user.id,
+            idempotency_key=normalized_key,
+        )
+        if winner is None:
+            raise
+        return _replay_or_conflict(winner, request_fingerprint or "")
     except Exception:
         session.rollback()
         raise
