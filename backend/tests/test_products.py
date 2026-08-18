@@ -18,7 +18,7 @@ from app.utils.jwt import create_access_token
 from app.utils.password import hash_password
 from app.websocket.manager import ConnectionManager
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -202,6 +202,65 @@ def test_product_list_is_page_scoped_paginated_and_searchable(
     assert all(item["name"] != "Bob Product" for item in first_page.json()["items"])
 
 
+def test_product_list_inventory_summary_is_semantic_and_not_n_plus_one(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _users(session)
+    page = _make_page(session, alice, "page-product-inventory-summary")
+    _select_page(session, alice, page)
+    untracked = _create_product(client, alice, name="Untracked", sku="UNTRACKED")
+    tracked = _create_product(client, alice, name="Tracked", sku="TRACKED")
+    disabled = _create_product(client, alice, name="Disabled", sku="DISABLED")
+
+    enabled = client.post(
+        f"/api/v1/facebook/products/{tracked['uuid']}/inventory/enable",
+        headers=_auth(alice),
+        json={"opening_quantity": 7, "note": "Picker stock"},
+    )
+    assert enabled.status_code == 200
+    disabled_enabled = client.post(
+        f"/api/v1/facebook/products/{disabled['uuid']}/inventory/enable",
+        headers=_auth(alice),
+        json={"opening_quantity": 4, "note": "Retained later"},
+    )
+    assert disabled_enabled.status_code == 200
+    disabled_result = client.post(
+        f"/api/v1/facebook/products/{disabled['uuid']}/inventory/disable",
+        headers=_auth(alice),
+    )
+    assert disabled_result.status_code == 200
+
+    statements: list[str] = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _many) -> None:
+        statements.append(statement)
+
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", capture_statement)
+    try:
+        response = client.get(
+            "/api/v1/facebook/products?active=true&page=1&page_size=20",
+            headers=_auth(alice),
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_statement)
+
+    assert response.status_code == 200
+    products = {item["sku"]: item for item in response.json()["items"]}
+    assert products[untracked["sku"]]["track_inventory"] is False
+    assert products[untracked["sku"]]["quantity_on_hand"] is None
+    assert products[tracked["sku"]]["track_inventory"] is True
+    assert products[tracked["sku"]]["quantity_on_hand"] == 7
+    assert products[disabled["sku"]]["track_inventory"] is False
+    assert products[disabled["sku"]]["quantity_on_hand"] is None
+
+    inventory_queries = [
+        statement for statement in statements if "product_inventories" in statement.lower()
+    ]
+    assert len(inventory_queries) == 1
+    assert "left outer join" in inventory_queries[0].lower()
+
+
 def test_update_and_archive_product(client: TestClient, session: Session) -> None:
     alice, _ = _users(session)
     page = _make_page(session, alice, "page-product-update")
@@ -255,6 +314,12 @@ def test_cross_page_product_read_update_and_archive_are_hidden(
     bob_page = _make_page(session, bob, "page-product-cross-bob")
     _select_page(session, bob, bob_page)
     bob_product = _create_product(client, bob, name="Bob Hidden", sku="HIDDEN")
+    bob_inventory = client.post(
+        f"/api/v1/facebook/products/{bob_product['uuid']}/inventory/enable",
+        headers=_auth(bob),
+        json={"opening_quantity": 99, "note": "Bob stock"},
+    )
+    assert bob_inventory.status_code == 200
     _select_page(session, alice, alice_page)
 
     path = f"/api/v1/facebook/products/{bob_product['uuid']}"

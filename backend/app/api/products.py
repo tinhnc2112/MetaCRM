@@ -44,6 +44,11 @@ def _serialize_product(product) -> ProductResponse:
         description=product.description,
         is_active=product.is_active,
         track_inventory=product.track_inventory,
+        quantity_on_hand=(
+            product.inventory.quantity_on_hand
+            if product.track_inventory and product.inventory is not None
+            else None
+        ),
         created_at=product.created_at,
         updated_at=product.updated_at,
     )

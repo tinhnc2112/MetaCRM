@@ -14,7 +14,7 @@ from app.services.facebook.conversations import PaginatedResult
 from app.services.facebook.pages import get_current_page
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 MONEY_QUANTUM = Decimal("0.01")
 MAX_MONEY = Decimal("9999999999.99")
@@ -52,6 +52,7 @@ def _product_for_page(session: Session, page_id: int, product_uuid: str) -> Prod
         return None
     return (
         session.query(Product)
+        .options(joinedload(Product.inventory))
         .filter(
             Product.public_id == public_id,
             Product.facebook_page_id == page_id,
@@ -108,7 +109,8 @@ def list_products(
 
     total = query.count()
     items = (
-        query.order_by(Product.name.asc(), Product.id.asc())
+        query.options(joinedload(Product.inventory))
+        .order_by(Product.name.asc(), Product.id.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()

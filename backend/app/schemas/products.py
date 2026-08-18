@@ -100,6 +100,7 @@ class ProductListItem(BaseModel):
     description: str | None = None
     is_active: bool
     track_inventory: bool
+    quantity_on_hand: int | None = None
     created_at: datetime
     updated_at: datetime
 

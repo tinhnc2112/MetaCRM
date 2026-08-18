@@ -9,6 +9,7 @@ export type Product = {
   description: string | null;
   is_active: boolean;
   track_inventory: boolean;
+  quantity_on_hand: number | null;
   created_at: string;
   updated_at: string;
 };

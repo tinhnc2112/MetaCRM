@@ -273,7 +273,12 @@ export function CustomerProfilePanel({
       setSelectedOrderUuid(order.uuid);
       void message.success(`Created order ${order.order_number}`);
     },
-    onError: (error, input) => {
+    onError: async (error, input) => {
+      if (isStockConflict(error)) {
+        await queryClient.invalidateQueries({
+          queryKey: ["product-picker", input.pageId]
+        });
+      }
       if (createOrderContextRef.current === input.contextKey) {
         setCreateOrderError(getReadableError(error));
       }
@@ -286,7 +291,9 @@ export function CustomerProfilePanel({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["customer-orders", input.pageId, input.customerUuid] }),
         queryClient.invalidateQueries({ queryKey: ["customer-order-summary", input.pageId, input.customerUuid] }),
-        queryClient.invalidateQueries({ queryKey: ["order-detail", input.pageId, input.orderUuid] })
+        queryClient.invalidateQueries({ queryKey: ["order-detail", input.pageId, input.orderUuid] }),
+        queryClient.invalidateQueries({ queryKey: ["product-picker", input.pageId] }),
+        queryClient.invalidateQueries({ queryKey: ["products", input.pageId] })
       ]);
       if (orderUpdateContextRef.current !== input.contextKey) {
         return;
@@ -294,7 +301,12 @@ export function CustomerProfilePanel({
       setOrderUpdateError(null);
       void message.success(input.successMessage);
     },
-    onError: (error, input) => {
+    onError: async (error, input) => {
+      if (isStockConflict(error)) {
+        await queryClient.invalidateQueries({
+          queryKey: ["product-picker", input.pageId]
+        });
+      }
       if (orderUpdateContextRef.current === input.contextKey) {
         setOrderUpdateError(getReadableError(error, "Could not update order. Please try again."));
       }
@@ -853,6 +865,7 @@ function CreateOrderModal({
   onSubmit: () => void;
 }) {
   const preview = calculatePreviewTotals(draft);
+  const stockWarnings = buildStockWarnings(draft.items);
 
   const updateDraft = (patch: Partial<CreateOrderDraft>) => {
     onChange({ ...draft, ...patch });
@@ -1016,6 +1029,19 @@ function CreateOrderModal({
                       price_overridden: false
                     });
                   }}
+                  onInventoryRefresh={(product) => {
+                    const selectedProduct = draft.items[index]?.selected_product;
+                    if (!selectedProduct || selectedProduct.uuid !== product.uuid) {
+                      return;
+                    }
+                    updateItem(index, {
+                      selected_product: {
+                        ...selectedProduct,
+                        track_inventory: product.track_inventory,
+                        quantity_on_hand: product.quantity_on_hand
+                      }
+                    });
+                  }}
                 />
               ) : (
                 <div className="create-order-grid">
@@ -1099,6 +1125,26 @@ function CreateOrderModal({
             </div>
           ))}
         </div>
+
+        {stockWarnings.length > 0 ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="Displayed stock may not cover this draft"
+            description={
+              <div className="create-order-stock-warning">
+                <ul>
+                  {stockWarnings.map((warning) => (
+                    <li key={warning.productUuid}>{warning.message}</li>
+                  ))}
+                </ul>
+                <Typography.Text type="secondary">
+                  This Order is created as a draft, so you can continue. Stock is checked authoritatively when the Order is confirmed.
+                </Typography.Text>
+              </div>
+            }
+          />
+        ) : null}
 
         <Button size="small" onClick={addItem} disabled={submitting}>
           Add item
@@ -1561,6 +1607,67 @@ function validateCreateOrderDraft(draft: CreateOrderDraft): string | null {
   return null;
 }
 
+type StockWarning = {
+  productUuid: string;
+  message: string;
+};
+
+function buildStockWarnings(items: CreateOrderItemDraft[]): StockWarning[] {
+  const aggregates = new Map<
+    string,
+    { name: string; requested: number; displayedStock: number | null; rows: number }
+  >();
+
+  for (const item of items) {
+    const product = item.mode === "product" ? item.selected_product : null;
+    if (!product?.track_inventory) {
+      continue;
+    }
+    const displayedStock =
+      product.quantity_on_hand !== null &&
+      Number.isSafeInteger(product.quantity_on_hand) &&
+      product.quantity_on_hand >= 0
+        ? product.quantity_on_hand
+        : null;
+    const existing = aggregates.get(product.uuid);
+    if (existing) {
+      existing.requested += Number.isSafeInteger(item.quantity) && item.quantity > 0 ? item.quantity : 0;
+      existing.rows += 1;
+      existing.displayedStock =
+        existing.displayedStock === null || displayedStock === null
+          ? null
+          : Math.min(existing.displayedStock, displayedStock);
+    } else {
+      aggregates.set(product.uuid, {
+        name: product.name,
+        requested: Number.isSafeInteger(item.quantity) && item.quantity > 0 ? item.quantity : 0,
+        displayedStock,
+        rows: 1
+      });
+    }
+  }
+
+  const warnings: StockWarning[] = [];
+  for (const [productUuid, aggregate] of aggregates) {
+    if (aggregate.displayedStock === null) {
+      warnings.push({
+        productUuid,
+        message: `${aggregate.name}: inventory is unavailable for this selected Product.`
+      });
+      continue;
+    }
+    if (aggregate.requested > aggregate.displayedStock) {
+      warnings.push({
+        productUuid,
+        message: `${aggregate.name}: ${aggregate.requested.toLocaleString()} requested${
+          aggregate.rows > 1 ? ` across ${aggregate.rows} rows` : ""
+        }; only ${aggregate.displayedStock.toLocaleString()} shown in stock.`
+      });
+    }
+  }
+  return warnings;
+}
+
 function buildOrderItemPayload(item: CreateOrderItemDraft): OrderItemCreate {
   const note = normaliseOptionalText(item.note);
   if (item.mode === "product" && item.selected_product) {
@@ -1603,8 +1710,13 @@ function getReadableError(
   fallback = "Could not create order. Please check the form and try again."
 ): string {
   if (typeof error === "object" && error !== null && "response" in error) {
-    const response = (error as { response?: { data?: { detail?: unknown } } }).response;
+    const response = (error as {
+      response?: { status?: number; data?: { detail?: unknown } };
+    }).response;
     const detail = response?.data?.detail;
+    if (response?.status === 409) {
+      return "Stock changed and is no longer sufficient. Review the selected products and try again.";
+    }
     if (typeof detail === "string") {
       if (detail === "Product not found") {
         return "A selected Product is inactive, archived, unavailable, or belongs to another Page. Choose another Product or switch that item to Manual.";
@@ -1616,6 +1728,13 @@ function getReadableError(
     }
   }
   return fallback;
+}
+
+function isStockConflict(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("response" in error)) {
+    return false;
+  }
+  return (error as { response?: { status?: number } }).response?.status === 409;
 }
 
 function formatTimestamp(value: string | null): string {

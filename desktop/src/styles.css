@@ -575,7 +575,23 @@ body {
 .product-picker-selection-title {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.product-picker-stock-notice {
+  font-size: 12px;
+}
+
+.create-order-stock-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.create-order-stock-warning ul {
+  margin: 0;
+  padding-left: 20px;
 }
 
 .create-order-price-override {

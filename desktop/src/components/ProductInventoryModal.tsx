@@ -149,7 +149,8 @@ export function ProductInventoryModal({
     onSuccess: async (_, variables) => {
       await Promise.all([
         invalidateInventory(variables),
-        queryClient.invalidateQueries({ queryKey: ["products", variables.pageId] })
+        queryClient.invalidateQueries({ queryKey: ["products", variables.pageId] }),
+        queryClient.invalidateQueries({ queryKey: ["product-picker", variables.pageId] })
       ]);
       if (!isActiveContext(variables)) {
         return;
@@ -175,7 +176,8 @@ export function ProductInventoryModal({
     onSuccess: async (_, variables) => {
       await Promise.all([
         invalidateInventory(variables),
-        queryClient.invalidateQueries({ queryKey: ["products", variables.pageId] })
+        queryClient.invalidateQueries({ queryKey: ["products", variables.pageId] }),
+        queryClient.invalidateQueries({ queryKey: ["product-picker", variables.pageId] })
       ]);
       if (!isActiveContext(variables)) {
         return;
@@ -195,7 +197,11 @@ export function ProductInventoryModal({
       adjustProductInventory(originUuid, payload),
     retry: false,
     onSuccess: async (_, variables) => {
-      await invalidateInventory(variables);
+      await Promise.all([
+        invalidateInventory(variables),
+        queryClient.invalidateQueries({ queryKey: ["products", variables.pageId] }),
+        queryClient.invalidateQueries({ queryKey: ["product-picker", variables.pageId] })
+      ]);
       if (!isActiveContext(variables)) {
         return;
       }
@@ -208,9 +214,12 @@ export function ProductInventoryModal({
     },
     onError: async (error, variables) => {
       if (getHttpStatus(error) === 409) {
-        await queryClient.invalidateQueries({
-          queryKey: ["inventory", variables.pageId, variables.productUuid]
-        });
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ["inventory", variables.pageId, variables.productUuid]
+          }),
+          queryClient.invalidateQueries({ queryKey: ["product-picker", variables.pageId] })
+        ]);
       }
       if (isActiveContext(variables)) {
         setActionError(getReadableInventoryError(error, "Could not adjust stock."));
