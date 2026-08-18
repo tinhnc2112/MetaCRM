@@ -30,7 +30,7 @@ import {
   Tag,
   Typography
 } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createOrder, getCustomerOrderSummary, getOrder, listCustomerOrders } from "../services/orderService";
 import type {
@@ -65,9 +65,17 @@ type CreateOrderDraft = {
   items: CreateOrderItemDraft[];
 };
 
+type CreateOrderMutationInput = {
+  payload: OrderCreatePayload;
+  pageId: string;
+  customerUuid: string;
+  contextKey: string;
+};
+
 type CustomerProfilePanelProps = {
   profile: CustomerProfileResponse | null;
   currentPageId: string | null;
+  createOrderConversationUuid?: string | null;
   pageTags: CustomerTag[];
   loading: boolean;
   error: boolean;
@@ -86,6 +94,7 @@ type CustomerProfilePanelProps = {
 export function CustomerProfilePanel({
   profile,
   currentPageId,
+  createOrderConversationUuid,
   pageTags,
   loading,
   error,
@@ -146,6 +155,15 @@ export function CustomerProfilePanel({
   const customerPhone = customer?.phone ?? null;
   const customerEmail = customer?.email ?? null;
   const orderStatusParam = orderStatus === "all" ? undefined : orderStatus;
+  const resolvedCreateOrderConversationUuid = createOrderConversationUuid ?? null;
+  const createOrderContextKey = JSON.stringify([
+    currentPageId,
+    customerUuid,
+    resolvedCreateOrderConversationUuid
+  ]);
+  const createOrderContextRef = useRef(createOrderContextKey);
+  const createOrderSubmitLockRef = useRef(false);
+  createOrderContextRef.current = createOrderContextKey;
 
   useEffect(() => {
     setOrderPage(1);
@@ -154,7 +172,7 @@ export function CustomerProfilePanel({
     setCreateOrderOpen(false);
     setCreateOrderError(null);
     setCreateOrderDraft(buildEmptyOrderDraft());
-  }, [currentPageId, customerUuid]);
+  }, [currentPageId, customerUuid, resolvedCreateOrderConversationUuid]);
 
   const ordersQuery = useQuery({
     queryKey: ["customer-orders", currentPageId, customerUuid, orderPage, ORDER_PAGE_SIZE, orderStatusParam ?? "all"],
@@ -180,23 +198,28 @@ export function CustomerProfilePanel({
   });
 
   const createOrderMutation = useMutation({
-    mutationFn: createOrder,
-    onSuccess: async (order) => {
+    mutationFn: ({ payload }: CreateOrderMutationInput) => createOrder(payload),
+    onSuccess: async (order, input) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["customer-orders", input.pageId, input.customerUuid] }),
+        queryClient.invalidateQueries({ queryKey: ["customer-order-summary", input.pageId, input.customerUuid] }),
+        queryClient.invalidateQueries({ queryKey: ["order-detail", input.pageId] })
+      ]);
+      if (createOrderContextRef.current !== input.contextKey) {
+        return;
+      }
       setCreateOrderOpen(false);
       setCreateOrderError(null);
       setCreateOrderDraft(buildEmptyOrderDraft());
       setOrderPage(1);
       setOrderStatus("all");
       setSelectedOrderUuid(order.uuid);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["customer-orders", currentPageId, customerUuid] }),
-        queryClient.invalidateQueries({ queryKey: ["customer-order-summary", currentPageId, customerUuid] }),
-        queryClient.invalidateQueries({ queryKey: ["order-detail", currentPageId] })
-      ]);
       void message.success(`Created order ${order.order_number}`);
     },
-    onError: (error) => {
-      setCreateOrderError(getReadableError(error));
+    onError: (error, input) => {
+      if (createOrderContextRef.current === input.contextKey) {
+        setCreateOrderError(getReadableError(error));
+      }
     }
   });
 
@@ -224,6 +247,9 @@ export function CustomerProfilePanel({
   };
 
   const handleSubmitOrder = async () => {
+    if (createOrderSubmitLockRef.current || createOrderMutation.isPending) {
+      return;
+    }
     if (!customerUuid || !currentPageId || !conversation) {
       setCreateOrderError("Customer profile is not ready for order creation.");
       return;
@@ -237,7 +263,6 @@ export function CustomerProfilePanel({
 
     const payload: OrderCreatePayload = {
       customer_uuid: customerUuid,
-      conversation_uuid: conversation.uuid,
       currency: createOrderDraft.currency.trim().toUpperCase() || "VND",
       discount_amount: createOrderDraft.discount_amount,
       shipping_fee: createOrderDraft.shipping_fee,
@@ -251,9 +276,24 @@ export function CustomerProfilePanel({
         note: normaliseOptionalText(item.note)
       }))
     };
+    if (resolvedCreateOrderConversationUuid) {
+      payload.conversation_uuid = resolvedCreateOrderConversationUuid;
+    }
 
     setCreateOrderError(null);
-    await createOrderMutation.mutateAsync(payload);
+    createOrderSubmitLockRef.current = true;
+    try {
+      await createOrderMutation.mutateAsync({
+        payload,
+        pageId: currentPageId,
+        customerUuid,
+        contextKey: createOrderContextKey
+      });
+    } catch {
+      // The mutation callback keeps the form open and renders the readable error.
+    } finally {
+      createOrderSubmitLockRef.current = false;
+    }
   };
 
   if (!conversation && loading) {
@@ -409,7 +449,7 @@ export function CustomerProfilePanel({
               size="small"
               type="primary"
               icon={<ShoppingCartOutlined />}
-              disabled={!customerUuid || !currentPageId}
+              disabled={!customerUuid || !currentPageId || createOrderMutation.isPending}
               onClick={() => {
                 setCreateOrderError(null);
                 setCreateOrderOpen(true);
@@ -468,8 +508,11 @@ export function CustomerProfilePanel({
         error={createOrderError}
         submitting={createOrderMutation.isPending}
         customerUuid={customerUuid}
-        conversationUuid={conversation.uuid}
-        onChange={setCreateOrderDraft}
+        conversationUuid={resolvedCreateOrderConversationUuid}
+        onChange={(nextDraft) => {
+          setCreateOrderDraft(nextDraft);
+          setCreateOrderError(null);
+        }}
         onCancel={() => {
           if (!createOrderMutation.isPending) {
             setCreateOrderOpen(false);
@@ -719,7 +762,7 @@ function CreateOrderModal({
             <InputNumber
               min={0}
               value={draft.discount_amount}
-              onChange={(value) => updateDraft({ discount_amount: value ?? 0 })}
+              onChange={(value) => updateDraft({ discount_amount: normaliseNumberInput(value, 0) })}
               disabled={submitting}
               className="create-order-number-input"
             />
@@ -729,7 +772,7 @@ function CreateOrderModal({
             <InputNumber
               min={0}
               value={draft.shipping_fee}
-              onChange={(value) => updateDraft({ shipping_fee: value ?? 0 })}
+              onChange={(value) => updateDraft({ shipping_fee: normaliseNumberInput(value, 0) })}
               disabled={submitting}
               className="create-order-number-input"
             />
@@ -792,8 +835,10 @@ function CreateOrderModal({
                   <span className="messenger-profile-label">Quantity</span>
                   <InputNumber
                     min={1}
+                    precision={0}
+                    step={1}
                     value={item.quantity}
-                    onChange={(value) => updateItem(index, { quantity: value ?? 1 })}
+                    onChange={(value) => updateItem(index, { quantity: normaliseNumberInput(value, 1) })}
                     disabled={submitting}
                     className="create-order-number-input"
                   />
@@ -803,7 +848,7 @@ function CreateOrderModal({
                   <InputNumber
                     min={0}
                     value={item.unit_price}
-                    onChange={(value) => updateItem(index, { unit_price: value ?? 0 })}
+                    onChange={(value) => updateItem(index, { unit_price: normaliseNumberInput(value, 0) })}
                     disabled={submitting}
                     className="create-order-number-input"
                   />
@@ -1086,24 +1131,31 @@ function validateCreateOrderDraft(draft: CreateOrderDraft): string | null {
   if (draft.items.length === 0) {
     return "Add at least one order item.";
   }
-  if (draft.discount_amount < 0) {
+  if (!draft.currency.trim()) {
+    return "Currency is required.";
+  }
+  if (!Number.isFinite(draft.discount_amount) || draft.discount_amount < 0) {
     return "Discount amount cannot be negative.";
   }
-  if (draft.shipping_fee < 0) {
+  if (!Number.isFinite(draft.shipping_fee) || draft.shipping_fee < 0) {
     return "Shipping fee cannot be negative.";
   }
   for (const [index, item] of draft.items.entries()) {
     if (!item.item_name.trim()) {
       return `Item ${index + 1} needs a name.`;
     }
-    if (!Number.isFinite(item.quantity) || item.quantity <= 0) {
-      return `Item ${index + 1} quantity must be greater than 0.`;
+    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+      return `Item ${index + 1} quantity must be a whole number greater than 0.`;
     }
     if (!Number.isFinite(item.unit_price) || item.unit_price < 0) {
       return `Item ${index + 1} unit price cannot be negative.`;
     }
   }
-  if (calculatePreviewTotals(draft).total < 0) {
+  const preview = calculatePreviewTotals(draft);
+  if (!Number.isFinite(preview.subtotal) || !Number.isFinite(preview.total)) {
+    return "Total preview must be a valid number.";
+  }
+  if (preview.total < 0) {
     return "Total preview cannot be negative.";
   }
   return null;
@@ -1120,6 +1172,11 @@ function calculatePreviewTotals(draft: CreateOrderDraft): { subtotal: number; to
 function normaliseOptionalText(value: string): string | null {
   const trimmed = value.trim();
   return trimmed || null;
+}
+
+function normaliseNumberInput(value: number | string | null, fallback: number): number {
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
 }
 
 function getReadableError(error: unknown): string {

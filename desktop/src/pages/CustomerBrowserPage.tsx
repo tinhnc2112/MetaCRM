@@ -119,14 +119,14 @@ export function CustomerBrowserPage() {
   }, [currentPageId, navigate, searchParams, selectedCustomerId, selectedCustomerQuery.isError, selectedCustomerQuery.isLoading]);
 
   useEffect(() => {
-    if (!selectedCustomerId || !selectedCustomer || !resolvedConversationId) {
+    if (!selectedCustomerId || !selectedCustomer || !activeConversationId || !resolvedConversationId) {
       return;
     }
-    if (searchParams.get("conversationId") === resolvedConversationId) {
+    if (activeConversationId === resolvedConversationId) {
       return;
     }
-    setSearchParams(buildCustomerSearchParams(searchParams, { conversationId: resolvedConversationId }), { replace: true });
-  }, [resolvedConversationId, searchParams, selectedCustomer, selectedCustomerId, setSearchParams]);
+    setSearchParams(buildCustomerSearchParams(searchParams, { conversationId: null }), { replace: true });
+  }, [activeConversationId, resolvedConversationId, searchParams, selectedCustomer, selectedCustomerId, setSearchParams]);
 
   const handleApplySearch = () => {
     const nextSearchParams = buildCustomerSearchParams(searchParams, {
@@ -334,6 +334,9 @@ export function CustomerBrowserPage() {
             <CustomerProfilePanel
               profile={displayProfile}
               currentPageId={currentPageId}
+              createOrderConversationUuid={
+                activeConversationId === resolvedConversationId ? activeConversationId : null
+              }
               pageTags={pageTagsQuery.data?.items ?? []}
               loading={selectedCustomerQuery.isLoading}
               error={selectedCustomerQuery.isError}

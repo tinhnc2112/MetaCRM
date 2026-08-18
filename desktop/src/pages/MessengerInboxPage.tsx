@@ -400,6 +400,7 @@ export function MessengerInboxPage() {
           <CustomerProfilePanel
             profile={customerProfile}
             currentPageId={currentPageId}
+            createOrderConversationUuid={selectedConversationId}
             pageTags={pageTags}
             loading={customerProfileQuery.isLoading}
             error={customerProfileQuery.isError}
