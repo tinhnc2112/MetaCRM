@@ -84,6 +84,9 @@ class OrderItem(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     public_id: Mapped[UUID] = mapped_column(unique=True, nullable=False, default=uuid4, index=True)
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
+    product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("products.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     item_name: Mapped[str] = mapped_column(String(255), nullable=False)
     sku: Mapped[str | None] = mapped_column(String(255), nullable=True)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -96,3 +99,4 @@ class OrderItem(Base):
     )
 
     order: Mapped[Order] = relationship(back_populates="items")
+    product: Mapped["Product | None"] = relationship(back_populates="order_items", lazy="joined")

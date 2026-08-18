@@ -47,6 +47,13 @@ from app.schemas.orders import (
     PaymentStatus,
     ShippingStatus,
 )
+from app.schemas.products import (
+    ProductCreate,
+    ProductListItem,
+    ProductListResponse,
+    ProductResponse,
+    ProductUpdate,
+)
 from app.schemas.auth import LoginRequest, RefreshRequest, RoleResponse, TokenResponse, UserResponse
 from app.schemas.facebook import (
     CurrentFacebookPageResponse,
@@ -102,6 +109,11 @@ __all__ = [
     "RoleResponse",
     "OrderUpdate",
     "PaymentStatus",
+    "ProductCreate",
+    "ProductListItem",
+    "ProductListResponse",
+    "ProductResponse",
+    "ProductUpdate",
     "TokenResponse",
     "UserResponse",
     "ShippingStatus",

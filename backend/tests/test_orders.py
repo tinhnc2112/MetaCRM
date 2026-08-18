@@ -15,6 +15,7 @@ from app.main import app
 from app.models.auth import User
 from app.models.customer_core import Customer
 from app.models.orders import Order, OrderItem
+from app.models.products import Product
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation
 from app.services.facebook.crypto import TokenCipher
@@ -223,6 +224,7 @@ def test_create_order_calculates_totals_and_snapshots(client: TestClient, sessio
     assert "created_by_id" not in body
     assert len(body["items"]) == 2
     assert body["items"][0]["line_total"] == "21.00"
+    assert body["items"][0]["product_uuid"] is None
     assert body["items"][1]["line_total"] == "5.00"
     assert "id" not in body["items"][0]
     assert "order_id" not in body["items"][0]
@@ -231,6 +233,168 @@ def test_create_order_calculates_totals_and_snapshots(client: TestClient, sessio
     assert order_row.customer_id == customer.id
     assert order_row.conversation_id == conversation.id
     assert session.query(OrderItem).filter(OrderItem.order_id == order_row.id).count() == 2
+
+
+def test_product_backed_items_snapshot_defaults_and_price_override(client: TestClient, session: Session) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-product")
+    _select_page(session, alice, page)
+    customer = _make_customer(session, name="Product Buyer")
+    _make_conversation(session, page, psid="psid-order-product", customer_id=customer.id)
+    product = Product(
+        facebook_page_id=page.id,
+        name="Garlic Powder 100g",
+        sku="GP100",
+        currency="VND",
+        sale_price=Decimal("35000.00"),
+        is_active=True,
+    )
+    session.add(product)
+    session.commit()
+    session.refresh(product)
+
+    response = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [
+                {"product_uuid": str(product.public_id), "quantity": 2},
+                {
+                    "product_uuid": str(product.public_id),
+                    "item_name": "Ignored client name",
+                    "sku": "IGNORED",
+                    "quantity": 1,
+                    "unit_price": 30000,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["subtotal_amount"] == "100000.00"
+    assert body["total_amount"] == "100000.00"
+    assert [item["item_name"] for item in body["items"]] == ["Garlic Powder 100g", "Garlic Powder 100g"]
+    assert [item["sku"] for item in body["items"]] == ["GP100", "GP100"]
+    assert [item["unit_price"] for item in body["items"]] == ["35000.00", "30000.00"]
+    assert all(item["product_uuid"] == str(product.public_id) for item in body["items"])
+    order_row = session.query(Order).filter(Order.public_id == UUID(body["uuid"])).one()
+    rows = session.query(OrderItem).filter(OrderItem.order_id == order_row.id).all()
+    assert all(item.product_id == product.id for item in rows)
+
+
+def test_product_updates_and_archive_do_not_change_order_snapshots(client: TestClient, session: Session) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-product-history")
+    _select_page(session, alice, page)
+    customer = _make_customer(session, name="History Buyer")
+    _make_conversation(session, page, psid="psid-order-product-history", customer_id=customer.id)
+    product = Product(
+        facebook_page_id=page.id,
+        name="Original Name",
+        sku="ORIGINAL",
+        currency="VND",
+        sale_price=Decimal("25.00"),
+        is_active=True,
+    )
+    session.add(product)
+    session.commit()
+    session.refresh(product)
+
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [{"product_uuid": str(product.public_id), "quantity": 1}],
+        },
+    )
+    assert created.status_code == 200
+    order_uuid = created.json()["uuid"]
+
+    updated = client.patch(
+        f"/api/v1/facebook/products/{product.public_id}",
+        headers=_auth(alice),
+        json={"name": "New Name", "sku": "NEW-SKU", "sale_price": "40.00"},
+    )
+    assert updated.status_code == 200
+    detail = client.get(f"/api/v1/facebook/orders/{order_uuid}", headers=_auth(alice)).json()
+    assert detail["items"][0]["item_name"] == "Original Name"
+    assert detail["items"][0]["sku"] == "ORIGINAL"
+    assert detail["items"][0]["unit_price"] == "25.00"
+
+    archived = client.delete(f"/api/v1/facebook/products/{product.public_id}", headers=_auth(alice))
+    assert archived.status_code == 200
+    archived_detail = client.get(f"/api/v1/facebook/orders/{order_uuid}", headers=_auth(alice))
+    assert archived_detail.status_code == 200
+    assert archived_detail.json()["items"][0]["product_uuid"] == str(product.public_id)
+    rejected = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [{"product_uuid": str(product.public_id), "quantity": 1}],
+        },
+    )
+    assert rejected.status_code == 404
+
+
+def test_inactive_cross_page_and_currency_mismatched_products_are_rejected(
+    client: TestClient,
+    session: Session,
+) -> None:
+    alice, bob = _get_users(session)
+    alice_page = _make_page(session, alice, "page-order-product-alice")
+    bob_page = _make_page(session, bob, "page-order-product-bob")
+    _select_page(session, alice, alice_page)
+    customer = _make_customer(session, name="Scoped Product Buyer")
+    _make_conversation(session, alice_page, psid="psid-order-product-alice", customer_id=customer.id)
+    inactive = Product(
+        facebook_page_id=alice_page.id,
+        name="Inactive",
+        currency="VND",
+        sale_price=Decimal("1.00"),
+        is_active=False,
+    )
+    usd_product = Product(
+        facebook_page_id=alice_page.id,
+        name="USD Product",
+        currency="USD",
+        sale_price=Decimal("1.00"),
+        is_active=True,
+    )
+    cross_page = Product(
+        facebook_page_id=bob_page.id,
+        name="Cross Page",
+        currency="VND",
+        sale_price=Decimal("1.00"),
+        is_active=True,
+    )
+    session.add_all([inactive, usd_product, cross_page])
+    session.commit()
+
+    for product in (inactive, cross_page):
+        response = client.post(
+            "/api/v1/facebook/orders",
+            headers=_auth(alice),
+            json={
+                "customer_uuid": str(customer.public_id),
+                "items": [{"product_uuid": str(product.public_id), "quantity": 1}],
+            },
+        )
+        assert response.status_code == 404
+
+    currency_mismatch = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "currency": "VND",
+            "items": [{"product_uuid": str(usd_product.public_id), "quantity": 1}],
+        },
+    )
+    assert currency_mismatch.status_code == 422
 
 
 def test_create_order_rejects_cross_page_customer(client: TestClient, session: Session) -> None:

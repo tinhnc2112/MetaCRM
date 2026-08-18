@@ -28,6 +28,7 @@ from app.services.facebook.orders import (
     update_order,
 )
 from app.services.facebook.pages import get_current_page
+from app.services.facebook.products import ProductUnavailableError
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
@@ -41,6 +42,7 @@ def _money(value: object) -> str:
 def _serialize_item(item) -> OrderItemResponse:
     return OrderItemResponse(
         uuid=str(item.public_id),
+        product_uuid=str(item.product.public_id) if item.product is not None else None,
         item_name=item.item_name,
         sku=item.sku,
         quantity=item.quantity,
@@ -216,6 +218,8 @@ def create_order_endpoint(
             shipping_address=payload.shipping_address,
             note=payload.note,
         )
+    except ProductUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 

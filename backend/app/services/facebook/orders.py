@@ -15,6 +15,7 @@ from app.models.orders import Order, OrderItem
 from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.conversations import PaginatedResult, get_conversation_for_user
 from app.services.facebook.pages import get_current_page
+from app.services.facebook.products import resolve_product_for_order_item
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
@@ -168,6 +169,39 @@ def calculate_order_totals(
     )
 
 
+def _prepare_order_items(
+    session: Session,
+    page,
+    items: Sequence[Mapping[str, object]],
+    *,
+    currency: str,
+) -> list[dict[str, object]]:
+    prepared_items: list[dict[str, object]] = []
+    for item in items:
+        product_uuid = item.get("product_uuid")
+        if product_uuid:
+            product = resolve_product_for_order_item(session, page, str(product_uuid))
+            if product.currency != currency:
+                raise ValueError("Product currency must match order currency")
+            prepared_items.append(
+                {
+                    **item,
+                    "product_id": product.id,
+                    "item_name": product.name,
+                    "sku": product.sku,
+                    "unit_price": product.sale_price if item.get("unit_price") is None else item["unit_price"],
+                }
+            )
+            continue
+
+        if item.get("item_name") is None:
+            raise ValueError("item_name is required for manual items")
+        if item.get("unit_price") is None:
+            raise ValueError("unit_price is required for manual items")
+        prepared_items.append({**item, "product_id": None})
+    return prepared_items
+
+
 def generate_order_number(_page_id: str, order_uuid: UUID) -> str:
     today = datetime.now(UTC).strftime("%Y%m%d")
     return f"ORD-{today}-{order_uuid.hex[:12].upper()}"
@@ -255,8 +289,10 @@ def create_order(
         if linked_customer_id != customer.id:
             return None
 
+    order_currency = (currency or "VND").strip().upper() or "VND"
+    prepared_items = _prepare_order_items(session, page_obj, items, currency=order_currency)
     totals = calculate_order_totals(
-        items,
+        prepared_items,
         discount_amount=discount_amount,
         shipping_fee=shipping_fee,
     )
@@ -271,7 +307,7 @@ def create_order(
         status=_validate_status(status, ORDER_STATUSES, "status"),
         payment_status=_validate_status(payment_status, PAYMENT_STATUSES, "payment_status"),
         shipping_status=_validate_status(shipping_status, SHIPPING_STATUSES, "shipping_status"),
-        currency=(currency or "VND").strip().upper() or "VND",
+        currency=order_currency,
         subtotal_amount=totals.subtotal_amount,
         discount_amount=_money(discount_amount),
         shipping_fee=_money(shipping_fee),
@@ -287,10 +323,11 @@ def create_order(
     session.flush()
 
     order_items: list[OrderItem] = []
-    for item, line_total in zip(items, totals.line_totals, strict=True):
+    for item, line_total in zip(prepared_items, totals.line_totals, strict=True):
         order_item = OrderItem(
             public_id=uuid4(),
             order_id=order.id,
+            product_id=item["product_id"],  # type: ignore[arg-type]
             item_name=str(item["item_name"]).strip(),
             sku=_normalise_text(item.get("sku")),
             quantity=int(item["quantity"]),

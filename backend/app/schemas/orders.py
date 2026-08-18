@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Literal
 
 from app.schemas.messenger import PaginationMeta
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 OrderStatus = Literal["draft", "confirmed", "cancelled"]
@@ -16,17 +16,32 @@ ShippingStatus = Literal["pending", "packed", "shipped", "delivered", "cancelled
 
 
 class OrderItemCreate(BaseModel):
-    item_name: str = Field(min_length=1, max_length=255)
+    product_uuid: str | None = None
+    item_name: str | None = Field(default=None, max_length=255)
     sku: str | None = Field(default=None, max_length=255)
     quantity: int = Field(ge=1)
-    unit_price: Decimal = Field(ge=Decimal("0"))
+    unit_price: Decimal | None = Field(default=None, ge=Decimal("0"))
     note: str | None = Field(default=None, max_length=5000)
+
+    @model_validator(mode="after")
+    def validate_manual_or_product_item(self) -> OrderItemCreate:
+        self.product_uuid = self.product_uuid.strip() if self.product_uuid else None
+        self.item_name = self.item_name.strip() if self.item_name else None
+        self.sku = self.sku.strip() if self.sku else None
+        self.note = self.note.strip() if self.note else None
+        if self.product_uuid is None:
+            if self.item_name is None:
+                raise ValueError("item_name is required for manual items")
+            if self.unit_price is None:
+                raise ValueError("unit_price is required for manual items")
+        return self
 
 
 class OrderItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     uuid: str
+    product_uuid: str | None = None
     item_name: str
     sku: str | None = None
     quantity: int
