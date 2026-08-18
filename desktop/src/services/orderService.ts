@@ -1,5 +1,5 @@
 import { apiClient } from "./apiClient";
-import type { CustomerOrderSummary, OrderListResponse, OrderResponse, OrderStatus } from "../types/order";
+import type { CustomerOrderSummary, OrderCreatePayload, OrderListResponse, OrderResponse, OrderStatus } from "../types/order";
 
 export async function listCustomerOrders(
   customerUuid: string,
@@ -31,5 +31,10 @@ export async function getCustomerOrderSummary(customerUuid: string): Promise<Cus
   const response = await apiClient.get<CustomerOrderSummary>(
     `/api/v1/facebook/customers/${encodeURIComponent(customerUuid)}/orders/summary`
   );
+  return response.data;
+}
+
+export async function createOrder(payload: OrderCreatePayload): Promise<OrderResponse> {
+  const response = await apiClient.post<OrderResponse>("/api/v1/facebook/orders", payload);
   return response.data;
 }

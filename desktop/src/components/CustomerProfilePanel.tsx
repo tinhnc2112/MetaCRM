@@ -9,17 +9,36 @@ import {
   TeamOutlined,
   TagOutlined
 } from "@ant-design/icons";
-import { useQuery } from "@tanstack/react-query";
-import { Alert, Avatar, Badge, Button, Empty, Input, List, Pagination, Select, Space, Spin, Statistic, Tag, Typography } from "antd";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Alert,
+  App as AntApp,
+  Avatar,
+  Badge,
+  Button,
+  Divider,
+  Empty,
+  Input,
+  InputNumber,
+  List,
+  Modal,
+  Pagination,
+  Select,
+  Space,
+  Spin,
+  Statistic,
+  Tag,
+  Typography
+} from "antd";
 import { useEffect, useMemo, useState } from "react";
 
-import { getCustomerOrderSummary, getOrder, listCustomerOrders } from "../services/orderService";
+import { createOrder, getCustomerOrderSummary, getOrder, listCustomerOrders } from "../services/orderService";
 import type {
   CustomerProfileResponse,
   CustomerNoteSaveRequest,
   CustomerTag
 } from "../types/customer";
-import type { CustomerOrderSummary, OrderListItem, OrderResponse, OrderStatus } from "../types/order";
+import type { CustomerOrderSummary, OrderCreatePayload, OrderListItem, OrderResponse, OrderStatus } from "../types/order";
 
 const ORDER_PAGE_SIZE = 5;
 const ORDER_STATUS_OPTIONS: Array<{ label: string; value: "all" | OrderStatus }> = [
@@ -28,6 +47,23 @@ const ORDER_STATUS_OPTIONS: Array<{ label: string; value: "all" | OrderStatus }>
   { label: "Confirmed", value: "confirmed" },
   { label: "Cancelled", value: "cancelled" }
 ];
+
+type CreateOrderItemDraft = {
+  item_name: string;
+  sku: string;
+  quantity: number;
+  unit_price: number;
+  note: string;
+};
+
+type CreateOrderDraft = {
+  currency: string;
+  discount_amount: number;
+  shipping_fee: number;
+  shipping_address: string;
+  note: string;
+  items: CreateOrderItemDraft[];
+};
 
 type CustomerProfilePanelProps = {
   profile: CustomerProfileResponse | null;
@@ -64,12 +100,17 @@ export function CustomerProfilePanel({
   onOpenConversation,
   onSelectConversation
 }: CustomerProfilePanelProps) {
+  const queryClient = useQueryClient();
+  const { message } = AntApp.useApp();
   const [noteId, setNoteId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
   const [orderPage, setOrderPage] = useState(1);
   const [orderStatus, setOrderStatus] = useState<"all" | OrderStatus>("all");
   const [selectedOrderUuid, setSelectedOrderUuid] = useState<string | null>(null);
+  const [createOrderOpen, setCreateOrderOpen] = useState(false);
+  const [createOrderError, setCreateOrderError] = useState<string | null>(null);
+  const [createOrderDraft, setCreateOrderDraft] = useState<CreateOrderDraft>(() => buildEmptyOrderDraft());
 
   const conversation = profile?.conversation ?? null;
   const customer = profile?.customer ?? null;
@@ -110,6 +151,9 @@ export function CustomerProfilePanel({
     setOrderPage(1);
     setOrderStatus("all");
     setSelectedOrderUuid(null);
+    setCreateOrderOpen(false);
+    setCreateOrderError(null);
+    setCreateOrderDraft(buildEmptyOrderDraft());
   }, [currentPageId, customerUuid]);
 
   const ordersQuery = useQuery({
@@ -135,6 +179,27 @@ export function CustomerProfilePanel({
     enabled: Boolean(currentPageId && selectedOrderUuid)
   });
 
+  const createOrderMutation = useMutation({
+    mutationFn: createOrder,
+    onSuccess: async (order) => {
+      setCreateOrderOpen(false);
+      setCreateOrderError(null);
+      setCreateOrderDraft(buildEmptyOrderDraft());
+      setOrderPage(1);
+      setOrderStatus("all");
+      setSelectedOrderUuid(order.uuid);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["customer-orders", currentPageId, customerUuid] }),
+        queryClient.invalidateQueries({ queryKey: ["customer-order-summary", currentPageId, customerUuid] }),
+        queryClient.invalidateQueries({ queryKey: ["order-detail", currentPageId] })
+      ]);
+      void message.success(`Created order ${order.order_number}`);
+    },
+    onError: (error) => {
+      setCreateOrderError(getReadableError(error));
+    }
+  });
+
   const availableTags = useMemo(() => {
     const assignedTagIds = new Set(assignedTags.map((tag) => tag.id));
     return pageTags.filter((tag) => !assignedTagIds.has(tag.id));
@@ -156,6 +221,39 @@ export function CustomerProfilePanel({
     }
     await onAssignTag(selectedTagId);
     setSelectedTagId(null);
+  };
+
+  const handleSubmitOrder = async () => {
+    if (!customerUuid || !currentPageId || !conversation) {
+      setCreateOrderError("Customer profile is not ready for order creation.");
+      return;
+    }
+
+    const validationError = validateCreateOrderDraft(createOrderDraft);
+    if (validationError) {
+      setCreateOrderError(validationError);
+      return;
+    }
+
+    const payload: OrderCreatePayload = {
+      customer_uuid: customerUuid,
+      conversation_uuid: conversation.uuid,
+      currency: createOrderDraft.currency.trim().toUpperCase() || "VND",
+      discount_amount: createOrderDraft.discount_amount,
+      shipping_fee: createOrderDraft.shipping_fee,
+      shipping_address: normaliseOptionalText(createOrderDraft.shipping_address),
+      note: normaliseOptionalText(createOrderDraft.note),
+      items: createOrderDraft.items.map((item) => ({
+        item_name: item.item_name.trim(),
+        sku: normaliseOptionalText(item.sku),
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        note: normaliseOptionalText(item.note)
+      }))
+    };
+
+    setCreateOrderError(null);
+    await createOrderMutation.mutateAsync(payload);
   };
 
   if (!conversation && loading) {
@@ -306,17 +404,31 @@ export function CustomerProfilePanel({
       <section className="messenger-profile-section">
         <div className="messenger-profile-section-header">
           <Typography.Title level={5}>Orders</Typography.Title>
-          <Select
-            size="small"
-            value={orderStatus}
-            options={ORDER_STATUS_OPTIONS}
-            onChange={(value) => {
-              setOrderStatus(value);
-              setOrderPage(1);
-            }}
-            disabled={!customerUuid || ordersQuery.isLoading}
-            aria-label="Filter customer orders by status"
-          />
+          <Space wrap>
+            <Button
+              size="small"
+              type="primary"
+              icon={<ShoppingCartOutlined />}
+              disabled={!customerUuid || !currentPageId}
+              onClick={() => {
+                setCreateOrderError(null);
+                setCreateOrderOpen(true);
+              }}
+            >
+              Create order
+            </Button>
+            <Select
+              size="small"
+              value={orderStatus}
+              options={ORDER_STATUS_OPTIONS}
+              onChange={(value) => {
+                setOrderStatus(value);
+                setOrderPage(1);
+              }}
+              disabled={!customerUuid || ordersQuery.isLoading}
+              aria-label="Filter customer orders by status"
+            />
+          </Space>
         </div>
 
         {!customerUuid ? (
@@ -349,6 +461,24 @@ export function CustomerProfilePanel({
           />
         )}
       </section>
+
+      <CreateOrderModal
+        open={createOrderOpen}
+        draft={createOrderDraft}
+        error={createOrderError}
+        submitting={createOrderMutation.isPending}
+        customerUuid={customerUuid}
+        conversationUuid={conversation.uuid}
+        onChange={setCreateOrderDraft}
+        onCancel={() => {
+          if (!createOrderMutation.isPending) {
+            setCreateOrderOpen(false);
+            setCreateOrderError(null);
+            setCreateOrderDraft(buildEmptyOrderDraft());
+          }
+        }}
+        onSubmit={() => void handleSubmitOrder()}
+      />
 
       <section className="messenger-profile-section">
         <div className="messenger-profile-section-header">
@@ -505,6 +635,206 @@ export function CustomerProfilePanel({
         )}
       </section>
     </section>
+  );
+}
+
+function CreateOrderModal({
+  open,
+  draft,
+  error,
+  submitting,
+  customerUuid,
+  conversationUuid,
+  onChange,
+  onCancel,
+  onSubmit
+}: {
+  open: boolean;
+  draft: CreateOrderDraft;
+  error: string | null;
+  submitting: boolean;
+  customerUuid: string | null;
+  conversationUuid: string | null;
+  onChange: (draft: CreateOrderDraft) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  const preview = calculatePreviewTotals(draft);
+
+  const updateDraft = (patch: Partial<CreateOrderDraft>) => {
+    onChange({ ...draft, ...patch });
+  };
+
+  const updateItem = (index: number, patch: Partial<CreateOrderItemDraft>) => {
+    onChange({
+      ...draft,
+      items: draft.items.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item))
+    });
+  };
+
+  const addItem = () => {
+    onChange({ ...draft, items: [...draft.items, buildEmptyOrderItemDraft()] });
+  };
+
+  const removeItem = (index: number) => {
+    if (draft.items.length <= 1) {
+      return;
+    }
+    onChange({ ...draft, items: draft.items.filter((_, itemIndex) => itemIndex !== index) });
+  };
+
+  return (
+    <Modal
+      title="Create order"
+      open={open}
+      onCancel={onCancel}
+      onOk={onSubmit}
+      okText="Create order"
+      cancelText="Cancel"
+      confirmLoading={submitting}
+      okButtonProps={{ disabled: !customerUuid || submitting }}
+      width={760}
+      destroyOnClose
+    >
+      <div className="create-order-form">
+        {error ? <Alert type="error" showIcon message={error} /> : null}
+
+        <div className="create-order-context">
+          <OrderField label="Customer UUID" value={customerUuid ?? "Unavailable"} />
+          <OrderField label="Conversation UUID" value={conversationUuid ?? "Unavailable"} />
+        </div>
+
+        <div className="create-order-grid">
+          <div>
+            <span className="messenger-profile-label">Currency</span>
+            <Input
+              value={draft.currency}
+              maxLength={8}
+              onChange={(event) => updateDraft({ currency: event.target.value.toUpperCase() })}
+              disabled={submitting}
+            />
+          </div>
+          <div>
+            <span className="messenger-profile-label">Discount amount</span>
+            <InputNumber
+              min={0}
+              value={draft.discount_amount}
+              onChange={(value) => updateDraft({ discount_amount: value ?? 0 })}
+              disabled={submitting}
+              className="create-order-number-input"
+            />
+          </div>
+          <div>
+            <span className="messenger-profile-label">Shipping fee</span>
+            <InputNumber
+              min={0}
+              value={draft.shipping_fee}
+              onChange={(value) => updateDraft({ shipping_fee: value ?? 0 })}
+              disabled={submitting}
+              className="create-order-number-input"
+            />
+          </div>
+        </div>
+
+        <div>
+          <span className="messenger-profile-label">Shipping address</span>
+          <Input.TextArea
+            value={draft.shipping_address}
+            onChange={(event) => updateDraft({ shipping_address: event.target.value })}
+            disabled={submitting}
+            autoSize={{ minRows: 2, maxRows: 4 }}
+            placeholder="Optional shipping address"
+          />
+        </div>
+
+        <div>
+          <span className="messenger-profile-label">Order note</span>
+          <Input.TextArea
+            value={draft.note}
+            onChange={(event) => updateDraft({ note: event.target.value })}
+            disabled={submitting}
+            autoSize={{ minRows: 2, maxRows: 4 }}
+            placeholder="Optional internal note"
+          />
+        </div>
+
+        <Divider orientation="left">Items</Divider>
+
+        <div className="create-order-items">
+          {draft.items.map((item, index) => (
+            <div key={index} className="create-order-item">
+              <div className="create-order-item-header">
+                <Typography.Text strong>Item {index + 1}</Typography.Text>
+                <Button size="small" danger disabled={submitting || draft.items.length <= 1} onClick={() => removeItem(index)}>
+                  Remove
+                </Button>
+              </div>
+              <div className="create-order-grid">
+                <div>
+                  <span className="messenger-profile-label">Item name</span>
+                  <Input
+                    value={item.item_name}
+                    onChange={(event) => updateItem(index, { item_name: event.target.value })}
+                    disabled={submitting}
+                    placeholder="Required"
+                  />
+                </div>
+                <div>
+                  <span className="messenger-profile-label">SKU</span>
+                  <Input
+                    value={item.sku}
+                    onChange={(event) => updateItem(index, { sku: event.target.value })}
+                    disabled={submitting}
+                    placeholder="Optional"
+                  />
+                </div>
+                <div>
+                  <span className="messenger-profile-label">Quantity</span>
+                  <InputNumber
+                    min={1}
+                    value={item.quantity}
+                    onChange={(value) => updateItem(index, { quantity: value ?? 1 })}
+                    disabled={submitting}
+                    className="create-order-number-input"
+                  />
+                </div>
+                <div>
+                  <span className="messenger-profile-label">Unit price</span>
+                  <InputNumber
+                    min={0}
+                    value={item.unit_price}
+                    onChange={(value) => updateItem(index, { unit_price: value ?? 0 })}
+                    disabled={submitting}
+                    className="create-order-number-input"
+                  />
+                </div>
+              </div>
+              <div>
+                <span className="messenger-profile-label">Item note</span>
+                <Input
+                  value={item.note}
+                  onChange={(event) => updateItem(index, { note: event.target.value })}
+                  disabled={submitting}
+                  placeholder="Optional"
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <Button size="small" onClick={addItem} disabled={submitting}>
+          Add item
+        </Button>
+
+        <div className="create-order-preview">
+          <Typography.Text type="secondary">Preview only. Backend calculates final totals.</Typography.Text>
+          <div className="create-order-preview-grid">
+            <OrderField label="Subtotal preview" value={formatMoney(preview.subtotal, draft.currency)} />
+            <OrderField label="Total preview" value={formatMoney(preview.total, draft.currency)} />
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -729,6 +1059,81 @@ function OrderDetailPanel({
       ) : null}
     </div>
   );
+}
+
+function buildEmptyOrderItemDraft(): CreateOrderItemDraft {
+  return {
+    item_name: "",
+    sku: "",
+    quantity: 1,
+    unit_price: 0,
+    note: ""
+  };
+}
+
+function buildEmptyOrderDraft(): CreateOrderDraft {
+  return {
+    currency: "VND",
+    discount_amount: 0,
+    shipping_fee: 0,
+    shipping_address: "",
+    note: "",
+    items: [buildEmptyOrderItemDraft()]
+  };
+}
+
+function validateCreateOrderDraft(draft: CreateOrderDraft): string | null {
+  if (draft.items.length === 0) {
+    return "Add at least one order item.";
+  }
+  if (draft.discount_amount < 0) {
+    return "Discount amount cannot be negative.";
+  }
+  if (draft.shipping_fee < 0) {
+    return "Shipping fee cannot be negative.";
+  }
+  for (const [index, item] of draft.items.entries()) {
+    if (!item.item_name.trim()) {
+      return `Item ${index + 1} needs a name.`;
+    }
+    if (!Number.isFinite(item.quantity) || item.quantity <= 0) {
+      return `Item ${index + 1} quantity must be greater than 0.`;
+    }
+    if (!Number.isFinite(item.unit_price) || item.unit_price < 0) {
+      return `Item ${index + 1} unit price cannot be negative.`;
+    }
+  }
+  if (calculatePreviewTotals(draft).total < 0) {
+    return "Total preview cannot be negative.";
+  }
+  return null;
+}
+
+function calculatePreviewTotals(draft: CreateOrderDraft): { subtotal: number; total: number } {
+  const subtotal = draft.items.reduce((sum, item) => sum + item.quantity * item.unit_price, 0);
+  return {
+    subtotal,
+    total: subtotal - draft.discount_amount + draft.shipping_fee
+  };
+}
+
+function normaliseOptionalText(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function getReadableError(error: unknown): string {
+  if (typeof error === "object" && error !== null && "response" in error) {
+    const response = (error as { response?: { data?: { detail?: unknown } } }).response;
+    const detail = response?.data?.detail;
+    if (typeof detail === "string") {
+      return detail;
+    }
+    if (Array.isArray(detail)) {
+      return "Some order fields are invalid. Please review the form and try again.";
+    }
+  }
+  return "Could not create order. Please check the form and try again.";
 }
 
 function formatTimestamp(value: string | null): string {

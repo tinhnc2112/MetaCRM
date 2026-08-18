@@ -481,6 +481,57 @@ body {
   white-space: nowrap;
 }
 
+.create-order-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.create-order-context,
+.create-order-grid,
+.create-order-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.create-order-number-input {
+  width: 100%;
+}
+
+.create-order-items {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.create-order-item {
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.create-order-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.create-order-preview {
+  padding: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #eff6ff;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .customer-orders-pagination {
   display: flex;
   justify-content: center;

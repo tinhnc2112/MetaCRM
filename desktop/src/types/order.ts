@@ -16,6 +16,25 @@ export type OrderItem = {
   updated_at: string;
 };
 
+export type OrderItemCreate = {
+  item_name: string;
+  sku?: string | null;
+  quantity: number;
+  unit_price: number;
+  note?: string | null;
+};
+
+export type OrderCreatePayload = {
+  customer_uuid: string;
+  conversation_uuid?: string | null;
+  items: OrderItemCreate[];
+  currency?: string;
+  discount_amount?: number;
+  shipping_fee?: number;
+  shipping_address?: string | null;
+  note?: string | null;
+};
+
 export type OrderListItem = {
   uuid: string;
   order_number: string;
