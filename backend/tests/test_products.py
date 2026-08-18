@@ -190,6 +190,15 @@ def test_product_list_is_page_scoped_paginated_and_searchable(
     assert exact_sku.json()["meta"]["total"] == 1
     active_only = client.get("/api/v1/facebook/products?active=true", headers=_auth(alice))
     assert [item["name"] for item in active_only.json()["items"]] == ["Banana Chips"]
+    combined = client.get(
+        "/api/v1/facebook/products?q=apple&active=false&sku=APP-1", headers=_auth(alice)
+    )
+    assert [item["name"] for item in combined.json()["items"]] == ["Apple Tea"]
+    beyond_total = client.get(
+        "/api/v1/facebook/products?page=10&page_size=20", headers=_auth(alice)
+    )
+    assert beyond_total.json()["items"] == []
+    assert beyond_total.json()["meta"]["total"] == 2
     assert all(item["name"] != "Bob Product" for item in first_page.json()["items"])
 
 
@@ -226,6 +235,16 @@ def test_update_and_archive_product(client: TestClient, session: Session) -> Non
     )
     listing = client.get("/api/v1/facebook/products", headers=_auth(alice))
     assert listing.json()["meta"]["total"] == 0
+    repeated_archive = client.delete(
+        f"/api/v1/facebook/products/{product['uuid']}", headers=_auth(alice)
+    )
+    assert repeated_archive.status_code == 404
+    reserved_sku = client.post(
+        "/api/v1/facebook/products",
+        headers=_auth(alice),
+        json={"name": "Replacement", "sku": "NEW", "sale_price": "1.00"},
+    )
+    assert reserved_sku.status_code == 409
 
 
 def test_cross_page_product_read_update_and_archive_are_hidden(
@@ -242,6 +261,12 @@ def test_cross_page_product_read_update_and_archive_are_hidden(
     assert client.get(path, headers=_auth(alice)).status_code == 404
     assert client.patch(path, headers=_auth(alice), json={"name": "Stolen"}).status_code == 404
     assert client.delete(path, headers=_auth(alice)).status_code == 404
+    assert client.get("/api/v1/facebook/products?q=Bob+Hidden", headers=_auth(alice)).json()[
+        "items"
+    ] == []
+    assert client.get("/api/v1/facebook/products?sku=HIDDEN", headers=_auth(alice)).json()[
+        "items"
+    ] == []
 
 
 def test_sku_uniqueness_null_and_blank_rules(client: TestClient, session: Session) -> None:
@@ -266,6 +291,43 @@ def test_sku_uniqueness_null_and_blank_rules(client: TestClient, session: Sessio
     assert _create_product(client, bob, name="Same SKU Other Page", sku="ABC")["sku"] == "ABC"
 
 
+def test_sku_update_conflicts_are_clean_and_unrelated_updates_succeed(
+    client: TestClient,
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alice, _ = _users(session)
+    page = _make_page(session, alice, "page-product-sku-update")
+    _select_page(session, alice, page)
+    _create_product(client, alice, name="Reserved", sku="RESERVED")
+    candidate = _create_product(client, alice, name="Candidate", sku=None)
+
+    conflict = client.patch(
+        f"/api/v1/facebook/products/{candidate['uuid']}",
+        headers=_auth(alice),
+        json={"sku": "  RESERVED  "},
+    )
+    assert conflict.status_code == 409
+
+    unrelated = client.patch(
+        f"/api/v1/facebook/products/{candidate['uuid']}",
+        headers=_auth(alice),
+        json={"description": "Safe update"},
+    )
+    assert unrelated.status_code == 200
+    assert unrelated.json()["sku"] is None
+    assert unrelated.json()["description"] == "Safe update"
+
+    monkeypatch.setattr("app.services.facebook.products._sku_exists", lambda *args, **kwargs: False)
+    race_conflict = client.patch(
+        f"/api/v1/facebook/products/{candidate['uuid']}",
+        headers=_auth(alice),
+        json={"sku": "RESERVED"},
+    )
+    assert race_conflict.status_code == 409
+    assert race_conflict.json()["detail"] == "SKU already exists for this Facebook Page"
+
+
 def test_product_validation_and_invalid_uuid(client: TestClient, session: Session) -> None:
     alice, _ = _users(session)
     page = _make_page(session, alice, "page-product-validation")
@@ -282,6 +344,35 @@ def test_product_validation_and_invalid_uuid(client: TestClient, session: Sessio
         ).status_code
         == 422
     )
+    valid = _create_product(client, alice, name="Price Boundary")
+    assert (
+        client.post(
+            "/api/v1/facebook/products",
+            headers=_auth(alice),
+            json={"name": "Too Expensive", "sale_price": "10000000000.00"},
+        ).status_code
+        == 422
+    )
+    update_too_large = client.patch(
+        f"/api/v1/facebook/products/{valid['uuid']}",
+        headers=_auth(alice),
+        json={"sale_price": "999999999999999999999999999999999999"},
+    )
+    assert update_too_large.status_code == 422
+    assert client.get(
+        "/api/v1/facebook/products?page=0&page_size=101", headers=_auth(alice)
+    ).status_code == 422
+    malformed_payloads = [
+        {"name": "x" * 256, "sale_price": "1"},
+        {"name": "Long SKU", "sku": "x" * 256, "sale_price": "1"},
+        {"name": "Long Currency", "currency": "TOO-LONG!", "sale_price": "1"},
+        {"name": "Invalid Number", "sale_price": "not-a-number"},
+    ]
+    for payload in malformed_payloads:
+        response = client.post(
+            "/api/v1/facebook/products", headers=_auth(alice), json=payload
+        )
+        assert response.status_code == 422
     assert (
         client.post(
             "/api/v1/facebook/products",

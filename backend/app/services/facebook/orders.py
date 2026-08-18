@@ -20,6 +20,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 MONEY_QUANTUM = Decimal("0.01")
+MAX_MONEY = Decimal("9999999999.99")
 ORDER_STATUSES = {"draft", "confirmed", "cancelled"}
 PAYMENT_STATUSES = {"unpaid", "partial", "paid", "refunded"}
 SHIPPING_STATUSES = {"pending", "packed", "shipped", "delivered", "cancelled"}
@@ -54,6 +55,8 @@ def _money(value: Decimal | int | float | str | None) -> Decimal:
         amount = value
     else:
         amount = Decimal(str(value))
+    if amount > MAX_MONEY:
+        raise ValueError("money amount exceeds Numeric(12, 2) capacity")
     return amount.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
 
 
@@ -148,8 +151,12 @@ def calculate_order_totals(
             raise ValueError("unit_price must not be negative")
 
         line_total = (Decimal(quantity) * unit_price).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        if line_total > MAX_MONEY:
+            raise ValueError("line_total exceeds Numeric(12, 2) capacity")
         line_totals.append(line_total)
         subtotal += line_total
+        if subtotal > MAX_MONEY:
+            raise ValueError("subtotal_amount exceeds Numeric(12, 2) capacity")
 
     discount = _money(discount_amount)
     if discount < 0:
@@ -161,6 +168,8 @@ def calculate_order_totals(
     total = (subtotal - discount + shipping).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
     if total < 0:
         raise ValueError("total_amount cannot be negative")
+    if total > MAX_MONEY:
+        raise ValueError("total_amount exceeds Numeric(12, 2) capacity")
 
     return OrderTotals(
         subtotal_amount=subtotal.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP),
@@ -386,11 +395,15 @@ def update_order(
         order.shipping_fee = _money(data["shipping_fee"])
 
     subtotal = sum((item.line_total for item in order.items), Decimal("0"))
+    if subtotal > MAX_MONEY:
+        raise ValueError("subtotal_amount exceeds Numeric(12, 2) capacity")
     total = (subtotal - _money(order.discount_amount) + _money(order.shipping_fee)).quantize(
         MONEY_QUANTUM, rounding=ROUND_HALF_UP
     )
     if total < 0:
         raise ValueError("total_amount cannot be negative")
+    if total > MAX_MONEY:
+        raise ValueError("total_amount exceeds Numeric(12, 2) capacity")
 
     order.subtotal_amount = subtotal.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
     order.total_amount = total

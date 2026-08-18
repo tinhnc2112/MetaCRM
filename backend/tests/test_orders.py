@@ -282,6 +282,50 @@ def test_product_backed_items_snapshot_defaults_and_price_override(client: TestC
     order_row = session.query(Order).filter(Order.public_id == UUID(body["uuid"])).one()
     rows = session.query(OrderItem).filter(OrderItem.order_id == order_row.id).all()
     assert all(item.product_id == product.id for item in rows)
+    session.refresh(product)
+    assert product.sale_price == Decimal("35000.00")
+
+    negative_override = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [
+                {"product_uuid": str(product.public_id), "quantity": 1, "unit_price": "-0.01"}
+            ],
+        },
+    )
+    assert negative_override.status_code == 422
+
+
+def test_product_backed_order_rejects_numeric_overflow(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-product-overflow")
+    _select_page(session, alice, page)
+    customer = _make_customer(session, name="Overflow Buyer")
+    _make_conversation(session, page, psid="psid-order-product-overflow", customer_id=customer.id)
+    product = Product(
+        facebook_page_id=page.id,
+        name="Maximum Price",
+        currency="VND",
+        sale_price=Decimal("9999999999.99"),
+        is_active=True,
+    )
+    session.add(product)
+    session.commit()
+
+    response = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [{"product_uuid": str(product.public_id), "quantity": 2}],
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "line_total exceeds Numeric(12, 2) capacity"
 
 
 def test_product_updates_and_archive_do_not_change_order_snapshots(client: TestClient, session: Session) -> None:
@@ -701,6 +745,14 @@ def test_update_order_recalculates_totals_and_rejects_negative_total(
     assert updated.json()["discount_amount"] == "5.00"
     assert updated.json()["shipping_fee"] == "1.00"
     assert updated.json()["total_amount"] == "22.00"
+
+    overflow = client.patch(
+        f"/api/v1/facebook/orders/{order_uuid}",
+        headers=_auth(alice),
+        json={"shipping_fee": "9999999999.99"},
+    )
+    assert overflow.status_code == 422
+    session.rollback()
 
     rejected = client.patch(
         f"/api/v1/facebook/orders/{order_uuid}",

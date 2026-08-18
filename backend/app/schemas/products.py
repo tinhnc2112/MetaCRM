@@ -8,6 +8,8 @@ from decimal import Decimal
 from app.schemas.messenger import PaginationMeta
 from pydantic import BaseModel, Field, field_validator
 
+MAX_MONEY = Decimal("9999999999.99")
+
 
 def _required_text(value: str, field_name: str) -> str:
     cleaned = value.strip()
@@ -27,7 +29,7 @@ class ProductCreate(BaseModel):
     name: str = Field(max_length=255)
     sku: str | None = Field(default=None, max_length=255)
     currency: str = Field(default="VND", max_length=8)
-    sale_price: Decimal = Field(ge=0)
+    sale_price: Decimal = Field(ge=0, le=MAX_MONEY)
     description: str | None = None
     is_active: bool = True
 
@@ -51,7 +53,7 @@ class ProductUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=255)
     sku: str | None = Field(default=None, max_length=255)
     currency: str | None = Field(default=None, max_length=8)
-    sale_price: Decimal | None = Field(default=None, ge=0)
+    sale_price: Decimal | None = Field(default=None, ge=0, le=MAX_MONEY)
     description: str | None = None
     is_active: bool | None = None
 

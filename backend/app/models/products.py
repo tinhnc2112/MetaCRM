@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 class Product(Base):
     __tablename__ = "products"
     __table_args__ = (
+        UniqueConstraint("public_id", name="uq_products_public_id"),
         UniqueConstraint("facebook_page_id", "sku", name="uq_products_page_sku"),
         Index("ix_products_facebook_page_id", "facebook_page_id"),
         Index("ix_products_name", "name"),
@@ -39,7 +40,7 @@ class Product(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    public_id: Mapped[UUID] = mapped_column(unique=True, nullable=False, default=uuid4, index=True)
+    public_id: Mapped[UUID] = mapped_column(nullable=False, default=uuid4)
     facebook_page_id: Mapped[int] = mapped_column(
         ForeignKey("facebook_pages.id", ondelete="CASCADE"), nullable=False
     )

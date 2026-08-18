@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 OrderStatus = Literal["draft", "confirmed", "cancelled"]
 PaymentStatus = Literal["unpaid", "partial", "paid", "refunded"]
 ShippingStatus = Literal["pending", "packed", "shipped", "delivered", "cancelled"]
+MAX_MONEY = Decimal("9999999999.99")
 
 
 class OrderItemCreate(BaseModel):
@@ -20,7 +21,7 @@ class OrderItemCreate(BaseModel):
     item_name: str | None = Field(default=None, max_length=255)
     sku: str | None = Field(default=None, max_length=255)
     quantity: int = Field(ge=1)
-    unit_price: Decimal | None = Field(default=None, ge=Decimal("0"))
+    unit_price: Decimal | None = Field(default=None, ge=Decimal("0"), le=MAX_MONEY)
     note: str | None = Field(default=None, max_length=5000)
 
     @model_validator(mode="after")
@@ -60,8 +61,8 @@ class OrderCreate(BaseModel):
     payment_status: PaymentStatus = "unpaid"
     shipping_status: ShippingStatus = "pending"
     currency: str = Field(default="VND", min_length=1, max_length=8)
-    discount_amount: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
-    shipping_fee: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    discount_amount: Decimal = Field(default=Decimal("0"), ge=Decimal("0"), le=MAX_MONEY)
+    shipping_fee: Decimal = Field(default=Decimal("0"), ge=Decimal("0"), le=MAX_MONEY)
     shipping_address: str | None = Field(default=None, max_length=5000)
     note: str | None = Field(default=None, max_length=5000)
 
@@ -71,8 +72,8 @@ class OrderUpdate(BaseModel):
     payment_status: PaymentStatus | None = None
     shipping_status: ShippingStatus | None = None
     currency: str | None = Field(default=None, min_length=1, max_length=8)
-    discount_amount: Decimal | None = Field(default=None, ge=Decimal("0"))
-    shipping_fee: Decimal | None = Field(default=None, ge=Decimal("0"))
+    discount_amount: Decimal | None = Field(default=None, ge=Decimal("0"), le=MAX_MONEY)
+    shipping_fee: Decimal | None = Field(default=None, ge=Decimal("0"), le=MAX_MONEY)
     shipping_address: str | None = Field(default=None, max_length=5000)
     note: str | None = Field(default=None, max_length=5000)
 

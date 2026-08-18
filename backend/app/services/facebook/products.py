@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 MONEY_QUANTUM = Decimal("0.01")
+MAX_MONEY = Decimal("9999999999.99")
 
 
 class DuplicateProductSkuError(ValueError):
@@ -36,9 +37,11 @@ def _normalise_optional_text(value: str | None) -> str | None:
 
 def _money(value: Decimal | int | float | str) -> Decimal:
     amount = value if isinstance(value, Decimal) else Decimal(str(value))
-    amount = amount.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
     if amount < 0:
         raise ValueError("sale_price must not be negative")
+    if amount > MAX_MONEY:
+        raise ValueError("sale_price exceeds Numeric(12, 2) capacity")
+    amount = amount.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
     return amount
 
 
@@ -191,12 +194,13 @@ def update_product(
     if "is_active" in data:
         product.is_active = bool(data["is_active"])
 
+    pending_sku = product.sku
     session.add(product)
     try:
         session.commit()
     except IntegrityError as exc:
         session.rollback()
-        if product.sku is not None:
+        if pending_sku is not None:
             raise DuplicateProductSkuError("SKU already exists for this Facebook Page") from exc
         raise
     session.refresh(product)
