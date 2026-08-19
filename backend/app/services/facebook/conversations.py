@@ -14,6 +14,10 @@ from app.models.messenger import Conversation, Message
 from app.services.facebook.client import FacebookGraphClient
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.exceptions import FacebookApiError, FacebookIntegrationError, FacebookPermissionError
+from app.services.facebook.query_ordering import (
+    ascending_with_nulls_at_end,
+    descending_with_nulls_at_end,
+)
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -55,7 +59,7 @@ def _latest_message(session: Session, conversation_id: int) -> Message | None:
     return (
         session.query(Message)
         .filter(Message.conversation_id == conversation_id)
-        .order_by(Message.fb_timestamp_ms.desc().nulls_last(), Message.id.desc())
+        .order_by(*descending_with_nulls_at_end(Message.fb_timestamp_ms), Message.id.desc())
         .first()
     )
 
@@ -106,7 +110,7 @@ def list_conversations(
     total = query.count()
     items = (
         query.order_by(
-            Conversation.last_message_at.desc().nulls_last(),
+            *descending_with_nulls_at_end(Conversation.last_message_at),
             Conversation.created_at.desc(),
         )
         .offset((page - 1) * page_size)
@@ -150,14 +154,14 @@ def list_messages(
     total = query.count()
 
     if oldest_first:
-        order_primary = Message.fb_timestamp_ms.asc().nulls_last()
+        order_primary = ascending_with_nulls_at_end(Message.fb_timestamp_ms)
         order_secondary = Message.id.asc()
     else:
-        order_primary = Message.fb_timestamp_ms.desc().nulls_last()
+        order_primary = descending_with_nulls_at_end(Message.fb_timestamp_ms)
         order_secondary = Message.id.desc()
 
     items = (
-        query.order_by(order_primary, order_secondary)
+        query.order_by(*order_primary, order_secondary)
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()

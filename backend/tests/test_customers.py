@@ -16,8 +16,8 @@ from app.models.customers import CustomerNote
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation, Message
 from app.services.facebook.crypto import TokenCipher
-from app.services.facebook.customers import _descending_nulls_last
 from app.services.facebook.pages import select_current_page
+from app.services.facebook.query_ordering import descending_with_nulls_at_end
 from app.utils.jwt import create_access_token
 from app.utils.password import hash_password
 from app.websocket.manager import ConnectionManager
@@ -352,7 +352,7 @@ def test_customer_ordering_is_mysql_compatible_and_places_nulls_last(session: Se
     older.last_message_at = datetime(2026, 8, 15, 10, 0, tzinfo=UTC)
     session.commit()
 
-    ordering = _descending_nulls_last(Conversation.last_message_at)
+    ordering = descending_with_nulls_at_end(Conversation.last_message_at)
     rows = (
         session.query(Conversation)
         .filter(Conversation.facebook_page_id == alice_page.id)

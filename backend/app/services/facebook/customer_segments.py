@@ -16,6 +16,7 @@ from app.models.customers import (
 from app.models.messenger import Conversation
 from app.services.facebook.conversations import PaginatedResult, unread_count_for_conversation
 from app.services.facebook.pages import get_current_page
+from app.services.facebook.query_ordering import descending_with_nulls_at_end
 from sqlalchemy.orm import Session, selectinload
 
 CustomerSegmentFieldName = Literal[
@@ -351,7 +352,7 @@ def _matching_conversations(session: Session, page_id: int, rules: Sequence[Cust
         session.query(Conversation)
         .filter(Conversation.facebook_page_id == page_id, Conversation.deleted_at.is_(None))
         .order_by(
-            Conversation.last_message_at.desc().nulls_last(),
+            *descending_with_nulls_at_end(Conversation.last_message_at),
             Conversation.created_at.desc(),
             Conversation.id.desc(),
         )

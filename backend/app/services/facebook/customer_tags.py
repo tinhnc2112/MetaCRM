@@ -15,6 +15,7 @@ from app.models.messenger import Conversation
 from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.conversations import PaginatedResult, get_conversation_for_user
 from app.services.facebook.pages import get_current_page
+from app.services.facebook.query_ordering import descending_with_nulls_at_end
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
@@ -255,7 +256,7 @@ def list_customer_tag_customers(
     total = query.count()
     items = (
         query.order_by(
-            Conversation.last_message_at.desc().nulls_last(),
+            *descending_with_nulls_at_end(Conversation.last_message_at),
             Conversation.created_at.desc(),
             Conversation.id.desc(),
         )

@@ -20,6 +20,7 @@ from app.services.facebook.conversations import (
 )
 from app.services.facebook.customer_tags import list_tag_events_for_customer, list_tags_for_customer
 from app.services.facebook.pages import get_current_page
+from app.services.facebook.query_ordering import descending_with_nulls_at_end
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -30,11 +31,6 @@ def _utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
-
-
-def _descending_nulls_last(column):
-    """Return portable descending ordering with null values placed last."""
-    return column.is_(None).asc(), column.desc()
 
 
 @dataclass(frozen=True)
@@ -125,7 +121,7 @@ def _customer_conversations_for_page(session: Session, customer_id: int, faceboo
             Conversation.deleted_at.is_(None),
         )
         .order_by(
-            *_descending_nulls_last(Conversation.last_message_at),
+            *descending_with_nulls_at_end(Conversation.last_message_at),
             Conversation.created_at.desc(),
             Conversation.id.desc(),
         )
@@ -180,7 +176,7 @@ def _build_customer_profile(
     messages = (
         session.query(Message)
         .filter(Message.conversation_id.in_(conversation_ids))
-        .order_by(*_descending_nulls_last(Message.fb_timestamp_ms), Message.id.desc())
+        .order_by(*descending_with_nulls_at_end(Message.fb_timestamp_ms), Message.id.desc())
         .all()
     )
     sorted_conversations = sorted(conversations, key=_conversation_sort_key, reverse=True)
@@ -304,7 +300,7 @@ def list_customers(
             Customer.merged_into_customer_id.is_(None),
         )
         .order_by(
-            *_descending_nulls_last(Conversation.last_message_at),
+            *descending_with_nulls_at_end(Conversation.last_message_at),
             Conversation.created_at.desc(),
             Conversation.id.desc(),
         )

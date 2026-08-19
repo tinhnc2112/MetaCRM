@@ -24,6 +24,7 @@ from app.services.customer_identity import (
 )
 from app.services.facebook.conversations import PaginatedResult
 from app.services.facebook.pages import get_current_page
+from app.services.facebook.query_ordering import descending_with_nulls_at_end
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -176,7 +177,7 @@ def list_customer_duplicates(
             Conversation.deleted_at.is_(None),
         )
         .order_by(
-            Conversation.last_message_at.desc().nulls_last(),
+            *descending_with_nulls_at_end(Conversation.last_message_at),
             Conversation.created_at.desc(),
             Conversation.id.desc(),
         )

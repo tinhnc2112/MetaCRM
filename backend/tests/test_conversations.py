@@ -19,11 +19,16 @@ from app.models.auth import User
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation, Message
 from app.services.facebook.crypto import TokenCipher
+from app.services.facebook.query_ordering import (
+    ascending_with_nulls_at_end,
+    descending_with_nulls_at_end,
+)
 from app.utils.jwt import create_access_token
 from app.utils.password import hash_password
 from app.websocket.manager import ConnectionManager
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -147,7 +152,7 @@ def _make_message(
     conversation: Conversation,
     mid: str,
     text: str = "hello",
-    fb_ts: int = 1_700_000_000_000,
+    fb_ts: int | None = 1_700_000_000_000,
     is_from_page: bool = False,
 ) -> Message:
     msg = Message(
@@ -157,7 +162,7 @@ def _make_message(
         is_from_page=is_from_page,
         text=text,
         fb_timestamp_ms=fb_ts,
-        sent_at=datetime.fromtimestamp(fb_ts / 1000, tz=UTC),
+        sent_at=datetime.fromtimestamp(fb_ts / 1000, tz=UTC) if fb_ts is not None else None,
     )
     db.add(msg)
     db.commit()
@@ -169,6 +174,27 @@ def _get_users(db: Session) -> tuple[User, User]:
     alice = db.query(User).filter(User.username == "alice_0011").one()
     bob = db.query(User).filter(User.username == "bob_0011").one()
     return alice, bob
+
+
+def test_portable_ordering_compiles_for_mysql_without_nulls_last() -> None:
+    descending = select(Message.id).order_by(
+        *descending_with_nulls_at_end(Message.fb_timestamp_ms),
+        Message.id.desc(),
+    )
+    ascending = select(Message.id).order_by(
+        *ascending_with_nulls_at_end(Message.fb_timestamp_ms),
+        Message.id.asc(),
+    )
+
+    descending_sql = str(descending.compile(dialect=mysql.dialect())).upper()
+    ascending_sql = str(ascending.compile(dialect=mysql.dialect())).upper()
+
+    assert "NULLS LAST" not in descending_sql
+    assert "NULLS LAST" not in ascending_sql
+    assert "FB_TIMESTAMP_MS IS NULL ASC" in descending_sql
+    assert "FB_TIMESTAMP_MS DESC" in descending_sql
+    assert "FB_TIMESTAMP_MS IS NULL ASC" in ascending_sql
+    assert "FB_TIMESTAMP_MS ASC" in ascending_sql
 
 
 # ===========================================================================
@@ -276,6 +302,44 @@ class TestListConversations:
         items = response.json()["items"]
         assert items[0]["psid"] == "psid-new"
         assert items[1]["psid"] == "psid-old"
+
+    def test_null_last_ordering_is_stable_across_pages(
+        self, client: TestClient, session: Session
+    ) -> None:
+        alice, _ = _get_users(session)
+        page = _make_page(session, alice, "page-null-order")
+        _make_conversation(
+            session,
+            page,
+            "psid-older-non-null",
+            last_message_at=datetime(2025, 1, 1, tzinfo=UTC),
+        )
+        _make_conversation(
+            session,
+            page,
+            "psid-newer-non-null",
+            last_message_at=datetime(2025, 6, 1, tzinfo=UTC),
+        )
+        _make_conversation(session, page, "psid-null", last_message_at=None)
+
+        first = client.get(
+            "/api/v1/facebook/conversations",
+            params={"page": 1, "page_size": 2},
+            headers=_auth(alice),
+        )
+        second = client.get(
+            "/api/v1/facebook/conversations",
+            params={"page": 2, "page_size": 2},
+            headers=_auth(alice),
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert [item["psid"] for item in first.json()["items"]] == [
+            "psid-newer-non-null",
+            "psid-older-non-null",
+        ]
+        assert [item["psid"] for item in second.json()["items"]] == ["psid-null"]
 
     def test_response_shape(self, client: TestClient, session: Session) -> None:
         alice, _ = _get_users(session)
@@ -459,6 +523,42 @@ class TestListMessages:
         items = response.json()["items"]
         assert items[0]["mid"] == "mid-early"
         assert items[1]["mid"] == "mid-late"
+
+    def test_both_message_directions_put_nulls_on_last_page(
+        self, client: TestClient, session: Session
+    ) -> None:
+        alice, _ = _get_users(session)
+        page = _make_page(session, alice, "page-null-msg")
+        conv = _make_conversation(session, page, "psid-null-msg")
+        _make_message(session, conv, "mid-null", fb_ts=None)
+        _make_message(session, conv, "mid-early", fb_ts=1_700_000_001_000)
+        _make_message(session, conv, "mid-late", fb_ts=1_700_000_009_000)
+
+        newest = client.get(
+            f"/api/v1/facebook/conversations/{conv.uuid}/messages",
+            params={"page": 1, "page_size": 2},
+            headers=_auth(alice),
+        )
+        newest_last_page = client.get(
+            f"/api/v1/facebook/conversations/{conv.uuid}/messages",
+            params={"page": 2, "page_size": 2},
+            headers=_auth(alice),
+        )
+        oldest = client.get(
+            f"/api/v1/facebook/conversations/{conv.uuid}/messages",
+            params={"oldest_first": "true", "page": 1, "page_size": 2},
+            headers=_auth(alice),
+        )
+        oldest_last_page = client.get(
+            f"/api/v1/facebook/conversations/{conv.uuid}/messages",
+            params={"oldest_first": "true", "page": 2, "page_size": 2},
+            headers=_auth(alice),
+        )
+
+        assert [item["mid"] for item in newest.json()["items"]] == ["mid-late", "mid-early"]
+        assert [item["mid"] for item in newest_last_page.json()["items"]] == ["mid-null"]
+        assert [item["mid"] for item in oldest.json()["items"]] == ["mid-early", "mid-late"]
+        assert [item["mid"] for item in oldest_last_page.json()["items"]] == ["mid-null"]
 
     def test_message_pagination(self, client: TestClient, session: Session) -> None:
         alice, _ = _get_users(session)
