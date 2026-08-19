@@ -158,6 +158,7 @@ export function OrderOperationsDetail({
               <label>
                 <span>Payment</span>
                 <Select
+                  aria-label="Payment status"
                   value={paymentStatus}
                   options={PAYMENT_OPTIONS}
                   onChange={setPaymentStatus}
@@ -167,6 +168,7 @@ export function OrderOperationsDetail({
               <label>
                 <span>Shipping</span>
                 <Select
+                  aria-label="Shipping status"
                   value={shippingStatus}
                   options={SHIPPING_OPTIONS}
                   onChange={setShippingStatus}

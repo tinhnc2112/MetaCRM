@@ -149,6 +149,7 @@ def seed(environment: dict[str, str]) -> dict[str, object]:
     from app.models.messenger import Conversation
     from app.models.orders import Order, OrderEvent, OrderItem
     from app.models.products import Product
+    from app.services.facebook.inventory import enable_product_inventory
     from app.utils.password import hash_password
 
     with SessionLocal() as session:
@@ -250,8 +251,40 @@ def seed(environment: dict[str, str]) -> dict[str, object]:
             description="Deterministic browser test product",
             is_active=True,
         )
-        session.add(product)
-        session.flush()
+        critical_product = Product(
+            facebook_page_id=page_a.id,
+            name="E2E Critical Tracked Product",
+            sku="E2E-CRITICAL-A",
+            currency="VND",
+            sale_price=Decimal("150000.00"),
+            description="Tracked Product for the critical Order lifecycle",
+            is_active=True,
+        )
+        low_stock_product = Product(
+            facebook_page_id=page_a.id,
+            name="E2E Low Stock Product",
+            sku="E2E-LOW-B",
+            currency="VND",
+            sale_price=Decimal("75000.00"),
+            description="Tracked Product for insufficient-stock coverage",
+            is_active=True,
+        )
+        session.add_all([product, critical_product, low_stock_product])
+        session.commit()
+        assert enable_product_inventory(
+            session,
+            user,
+            str(critical_product.public_id),
+            opening_quantity=10,
+            note="E2E critical workflow opening stock",
+        ) is not None
+        assert enable_product_inventory(
+            session,
+            user,
+            str(low_stock_product.public_id),
+            opening_quantity=1,
+            note="E2E low-stock workflow opening stock",
+        ) is not None
 
         order = Order(
             facebook_page_id=page_a.id,
@@ -297,7 +330,17 @@ def seed(environment: dict[str, str]) -> dict[str, object]:
             "password": E2E_PASSWORD,
             "pages": {"a": PAGE_A_ID, "b": PAGE_B_ID},
             "customer": str(customer_a.public_id),
-            "product": str(product.public_id),
+            "products": {
+                "baseline": str(product.public_id),
+                "critical": {
+                    "uuid": str(critical_product.public_id),
+                    "starting_stock": 10,
+                },
+                "low_stock": {
+                    "uuid": str(low_stock_product.public_id),
+                    "starting_stock": 1,
+                },
+            },
             "order": str(order.public_id),
         }
 

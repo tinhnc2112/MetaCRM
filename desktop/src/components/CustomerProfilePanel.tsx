@@ -1102,6 +1102,7 @@ function CreateOrderModal({
                 <div>
                   <span className="messenger-profile-label">Quantity</span>
                   <InputNumber
+                    aria-label={`Item ${index + 1} quantity`}
                     min={1}
                     max={MAX_INTEGER_QUANTITY}
                     precision={0}
@@ -1115,6 +1116,7 @@ function CreateOrderModal({
                 <div>
                   <span className="messenger-profile-label">Unit price</span>
                   <InputNumber
+                    aria-label={`Item ${index + 1} unit price`}
                     min={0}
                     max={MAX_MONEY}
                     value={item.unit_price}
