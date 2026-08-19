@@ -7,6 +7,7 @@ export const E2E = {
   pageA: "E2E Page A",
   pageB: "E2E Page B",
   customerA: "E2E Customer A",
+  customerBeta: "E2E Customer Beta",
   productA: "E2E Product A",
   criticalProduct: "E2E Critical Tracked Product",
   criticalProductSku: "E2E-CRITICAL-A",

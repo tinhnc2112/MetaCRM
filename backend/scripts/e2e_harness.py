@@ -198,13 +198,19 @@ def seed(environment: dict[str, str]) -> dict[str, object]:
             email="customer-a@example.test",
             default_address="1 Test Street",
         )
+        customer_beta = Customer(
+            name="E2E Customer Beta",
+            phone="0900000003",
+            email="customer-beta@example.test",
+            default_address="3 Test Street",
+        )
         customer_b = Customer(
             name="E2E Customer B",
             phone="0900000002",
             email="customer-b@example.test",
             default_address="2 Test Street",
         )
-        session.add_all([customer_a, customer_b])
+        session.add_all([customer_a, customer_beta, customer_b])
         session.flush()
         session.add_all(
             [
@@ -214,6 +220,13 @@ def seed(environment: dict[str, str]) -> dict[str, object]:
                     channel="facebook",
                     external_id="e2e-psid-a",
                     display_name=customer_a.name,
+                ),
+                CustomerIdentity(
+                    customer_id=customer_beta.id,
+                    facebook_page_id=page_a.id,
+                    channel="facebook",
+                    external_id="e2e-psid-beta",
+                    display_name=customer_beta.name,
                 ),
                 CustomerIdentity(
                     customer_id=customer_b.id,
@@ -239,7 +252,14 @@ def seed(environment: dict[str, str]) -> dict[str, object]:
             customer_id=customer_b.id,
             customer_name=customer_b.name,
         )
-        session.add_all([conversation_a, conversation_b])
+        conversation_beta = Conversation(
+            facebook_page_id=page_a.id,
+            page_id=PAGE_A_ID,
+            psid="e2e-psid-beta",
+            customer_id=customer_beta.id,
+            customer_name=customer_beta.name,
+        )
+        session.add_all([conversation_a, conversation_beta, conversation_b])
         session.flush()
 
         product = Product(
@@ -330,6 +350,11 @@ def seed(environment: dict[str, str]) -> dict[str, object]:
             "password": E2E_PASSWORD,
             "pages": {"a": PAGE_A_ID, "b": PAGE_B_ID},
             "customer": str(customer_a.public_id),
+            "customers": {
+                "a": str(customer_a.public_id),
+                "beta": str(customer_beta.public_id),
+                "page_b": str(customer_b.public_id),
+            },
             "products": {
                 "baseline": str(product.public_id),
                 "critical": {
