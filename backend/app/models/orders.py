@@ -69,6 +69,17 @@ class Order(Base):
     customer_phone_snapshot: Mapped[str | None] = mapped_column(String(32), nullable=True)
     customer_email_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
     shipping_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    shipping_recipient_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shipping_recipient_phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    shipping_recipient_phone_normalized: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
+    shipping_ward: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shipping_district: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shipping_province: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shipping_postal_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    shipping_country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    shipping_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(36), nullable=True)

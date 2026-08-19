@@ -7,12 +7,79 @@ from decimal import Decimal
 from typing import Literal
 
 from app.schemas.messenger import PaginationMeta
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from app.utils.phone import normalize_phone
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 OrderStatus = Literal["draft", "confirmed", "cancelled"]
 PaymentStatus = Literal["unpaid", "partial", "paid", "refunded"]
 ShippingStatus = Literal["pending", "packed", "shipped", "delivered", "cancelled"]
 MAX_MONEY = Decimal("9999999999.99")
+
+
+class ShippingDestinationInput(BaseModel):
+    recipient_name: str | None = Field(default=None, max_length=255)
+    recipient_phone: str | None = Field(default=None, max_length=32)
+    address_line: str | None = Field(default=None, max_length=5000)
+    ward: str | None = Field(default=None, max_length=255)
+    district: str | None = Field(default=None, max_length=255)
+    province: str | None = Field(default=None, max_length=255)
+    postal_code: str | None = Field(default=None, max_length=32)
+    country_code: str | None = Field(default="VN", min_length=2, max_length=2)
+    note: str | None = Field(default=None, max_length=5000)
+
+    @field_validator(
+        "recipient_name",
+        "recipient_phone",
+        "address_line",
+        "ward",
+        "district",
+        "province",
+        "postal_code",
+        "note",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+    @field_validator("country_code", mode="before")
+    @classmethod
+    def normalize_country_code(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().upper() or None
+        if normalized is not None and (
+            len(normalized) != 2
+            or any(character < "A" or character > "Z" for character in normalized)
+        ):
+            raise ValueError("country_code must be a 2-letter code")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_phone(self) -> ShippingDestinationInput:
+        if self.recipient_phone is not None:
+            normalize_phone(
+                self.recipient_phone,
+                country_code=self.country_code or "VN",
+            )
+        return self
+
+
+class ShippingDestinationResponse(BaseModel):
+    recipient_name: str | None = None
+    recipient_phone: str | None = None
+    address_line: str | None = None
+    ward: str | None = None
+    district: str | None = None
+    province: str | None = None
+    postal_code: str | None = None
+    country_code: str = "VN"
+    note: str | None = None
+    is_complete: bool
 
 
 class OrderItemCreate(BaseModel):
@@ -63,7 +130,14 @@ class OrderCreate(BaseModel):
     discount_amount: Decimal = Field(default=Decimal("0"), ge=Decimal("0"), le=MAX_MONEY)
     shipping_fee: Decimal = Field(default=Decimal("0"), ge=Decimal("0"), le=MAX_MONEY)
     shipping_address: str | None = Field(default=None, max_length=5000)
+    shipping_destination: ShippingDestinationInput | None = None
     note: str | None = Field(default=None, max_length=5000)
+
+    @model_validator(mode="after")
+    def reject_ambiguous_shipping_input(self) -> OrderCreate:
+        if self.shipping_address is not None and self.shipping_destination is not None:
+            raise ValueError("Use either shipping_address or shipping_destination, not both")
+        return self
 
 
 class OrderUpdate(BaseModel):
@@ -105,6 +179,7 @@ class OrderListItem(BaseModel):
 
 
 class OrderResponse(OrderListItem):
+    shipping_destination: ShippingDestinationResponse | None = None
     items: list[OrderItemResponse] = Field(default_factory=list)
     deleted_at: datetime | None = None
 

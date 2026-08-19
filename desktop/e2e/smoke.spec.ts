@@ -1,6 +1,19 @@
 import { E2E, expect, test } from "./fixtures";
 
 test("operator can navigate core routes and switch Page scope", async ({ authenticatedPage: page }) => {
+  await page.getByRole("menuitem", { name: "Facebook" }).click();
+  const pageARow = page.getByRole("listitem").filter({ hasText: E2E.pageA });
+  await expect(pageARow).toBeVisible();
+  if ((await pageARow.getByRole("button", { name: "Current Page" }).count()) === 0) {
+    const selectPageA = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/v1/facebook/pages/e2e-page-a/select") &&
+        response.request().method() === "POST"
+    );
+    await pageARow.getByRole("button", { name: "Select" }).click();
+    expect((await selectPageA).status()).toBe(200);
+  }
+
   await page.getByRole("menuitem", { name: "Customers" }).click();
   await expect(page).toHaveURL(/\/customers(?:\/|\?|$)/);
   await expect(page.getByRole("heading", { name: "Customers", level: 2 })).toBeVisible();

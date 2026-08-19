@@ -21,6 +21,7 @@ from app.services.facebook.conversations import PaginatedResult, get_conversatio
 from app.services.facebook.inventory import consume_order_inventory, restore_order_inventory
 from app.services.facebook.pages import get_current_page
 from app.services.facebook.products import resolve_product_for_order_item
+from app.utils.phone import normalize_phone
 from sqlalchemy import and_, case, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, noload
@@ -43,6 +44,10 @@ class InvalidOrderTransitionError(ValueError):
 
 class OrderIdempotencyConflictError(ValueError):
     """Raised when an Order creation key is reused for a different request."""
+
+
+class ShippingDestinationLockedError(ValueError):
+    """Raised when fulfillment state makes the shipping snapshot immutable."""
 
 
 class OrderOperationalQueue(StrEnum):
@@ -74,6 +79,20 @@ class OrderTotals:
     subtotal_amount: Decimal
     total_amount: Decimal
     line_totals: list[Decimal]
+
+
+@dataclass(frozen=True)
+class ShippingDestinationData:
+    recipient_name: str | None
+    recipient_phone: str | None
+    address_line: str | None
+    ward: str | None
+    district: str | None
+    province: str | None
+    postal_code: str | None
+    country_code: str
+    note: str | None
+    is_complete: bool
 
 
 @dataclass(frozen=True)
@@ -161,6 +180,142 @@ def _normalise_text(value: str | None) -> str | None:
     return cleaned or None
 
 
+def _normalise_shipping_input(
+    value: Mapping[str, object] | None,
+    *,
+    legacy_address: str | None = None,
+    customer: Customer | None = None,
+) -> dict[str, str | None] | None:
+    if value is None:
+        raw: Mapping[str, object] = {
+            "recipient_name": customer.name if customer is not None else None,
+            "recipient_phone": customer.phone if customer is not None else None,
+            "address_line": legacy_address
+            or (customer.default_address if customer is not None else None),
+        }
+    else:
+        raw = value
+
+    recipient_name = _normalise_text(raw.get("recipient_name"))  # type: ignore[arg-type]
+    recipient_phone = _normalise_text(raw.get("recipient_phone"))  # type: ignore[arg-type]
+    address_line = _normalise_text(raw.get("address_line"))  # type: ignore[arg-type]
+    ward = _normalise_text(raw.get("ward"))  # type: ignore[arg-type]
+    district = _normalise_text(raw.get("district"))  # type: ignore[arg-type]
+    province = _normalise_text(raw.get("province"))  # type: ignore[arg-type]
+    postal_code = _normalise_text(raw.get("postal_code"))  # type: ignore[arg-type]
+    note = _normalise_text(raw.get("note"))  # type: ignore[arg-type]
+    meaningful = (
+        recipient_name,
+        recipient_phone,
+        address_line,
+        ward,
+        district,
+        province,
+        postal_code,
+        note,
+    )
+    if not any(meaningful):
+        return None
+
+    country_code = _normalise_text(raw.get("country_code")) or "VN"  # type: ignore[arg-type]
+    country_code = country_code.upper()
+    if len(country_code) != 2 or any(
+        character < "A" or character > "Z" for character in country_code
+    ):
+        raise ValueError("country_code must be a 2-letter code")
+    normalized_phone = (
+        normalize_phone(recipient_phone, country_code=country_code)
+        if recipient_phone is not None
+        else None
+    )
+    return {
+        "recipient_name": recipient_name,
+        "recipient_phone": recipient_phone,
+        "recipient_phone_normalized": normalized_phone,
+        "address_line": address_line,
+        "ward": ward,
+        "district": district,
+        "province": province,
+        "postal_code": postal_code,
+        "country_code": country_code,
+        "note": note,
+    }
+
+
+def _shipping_fingerprint_value(
+    value: Mapping[str, object] | None,
+    legacy_address: str | None,
+) -> dict[str, str | None] | None:
+    normalized = _normalise_shipping_input(value, legacy_address=legacy_address)
+    if normalized is None:
+        return None
+    normalized = dict(normalized)
+    normalized.pop("recipient_phone", None)
+    return normalized
+
+
+def shipping_destination_for_order(order: Order) -> ShippingDestinationData | None:
+    meaningful = (
+        order.shipping_recipient_name,
+        order.shipping_recipient_phone,
+        order.shipping_address,
+        order.shipping_ward,
+        order.shipping_district,
+        order.shipping_province,
+        order.shipping_postal_code,
+        order.shipping_note,
+    )
+    if not any(meaningful):
+        return None
+    complete = all(
+        (
+            order.shipping_recipient_name,
+            order.shipping_recipient_phone_normalized,
+            order.shipping_address,
+            order.shipping_ward,
+            order.shipping_district,
+            order.shipping_province,
+        )
+    )
+    return ShippingDestinationData(
+        recipient_name=order.shipping_recipient_name,
+        recipient_phone=order.shipping_recipient_phone,
+        address_line=order.shipping_address,
+        ward=order.shipping_ward,
+        district=order.shipping_district,
+        province=order.shipping_province,
+        postal_code=order.shipping_postal_code,
+        country_code=order.shipping_country_code or "VN",
+        note=order.shipping_note,
+        is_complete=complete,
+    )
+
+
+def _apply_shipping_destination(
+    order: Order,
+    destination: dict[str, str | None] | None,
+) -> None:
+    values = destination or {}
+    order.shipping_recipient_name = values.get("recipient_name")
+    order.shipping_recipient_phone = values.get("recipient_phone")
+    order.shipping_recipient_phone_normalized = values.get("recipient_phone_normalized")
+    order.shipping_address = values.get("address_line")
+    order.shipping_ward = values.get("ward")
+    order.shipping_district = values.get("district")
+    order.shipping_province = values.get("province")
+    order.shipping_postal_code = values.get("postal_code")
+    order.shipping_country_code = values.get("country_code")
+    order.shipping_note = values.get("note")
+
+
+def _shipping_destination_is_locked(order: Order) -> bool:
+    return order.status == "cancelled" or order.shipping_status in {
+        "shipped",
+        "delivered",
+        "cancelled",
+    }
+
+
 def normalize_order_idempotency_key(value: str | None) -> str | None:
     """Return the canonical UUID key accepted by POST Order creation."""
     if value is None:
@@ -209,6 +364,7 @@ def build_order_create_fingerprint(
     discount_amount: Decimal | int | float | str = Decimal("0"),
     shipping_fee: Decimal | int | float | str = Decimal("0"),
     shipping_address: str | None = None,
+    shipping_destination: Mapping[str, object] | None = None,
     note: str | None = None,
 ) -> str:
     """Fingerprint the normalized business inputs that drive a new Order."""
@@ -239,7 +395,10 @@ def build_order_create_fingerprint(
             "currency": (currency or "VND").strip().upper() or "VND",
             "discount_amount": _money(discount_amount),
             "shipping_fee": _money(shipping_fee),
-            "shipping_address": _normalise_text(shipping_address),
+            "shipping_destination": _shipping_fingerprint_value(
+                shipping_destination,
+                shipping_address,
+            ),
             "note": _normalise_text(note),
         }
     )
@@ -697,6 +856,7 @@ def _create_order_impl(
     discount_amount: Decimal | int | float | str = Decimal("0"),
     shipping_fee: Decimal | int | float | str = Decimal("0"),
     shipping_address: str | None = None,
+    shipping_destination: Mapping[str, object] | None = None,
     note: str | None = None,
     idempotency_key: str | None = None,
     request_fingerprint: str | None = None,
@@ -740,6 +900,11 @@ def _create_order_impl(
 
     order_uuid = uuid4()
     requested_status = _validate_status(status, ORDER_STATUSES, "status")
+    normalized_destination = _normalise_shipping_input(
+        shipping_destination,
+        legacy_address=shipping_address,
+        customer=customer,
+    )
     order = Order(
         public_id=order_uuid,
         facebook_page_id=page_obj.id,
@@ -757,12 +922,12 @@ def _create_order_impl(
         customer_name_snapshot=customer.name,
         customer_phone_snapshot=customer.phone,
         customer_email_snapshot=customer.email,
-        shipping_address=_normalise_text(shipping_address) or customer.default_address,
         note=_normalise_text(note),
         created_by_id=user.id,
         idempotency_key=idempotency_key,
         request_fingerprint=request_fingerprint,
     )
+    _apply_shipping_destination(order, normalized_destination)
     session.add(order)
     session.flush()
 
@@ -807,6 +972,7 @@ def create_order(
     discount_amount: Decimal | int | float | str = Decimal("0"),
     shipping_fee: Decimal | int | float | str = Decimal("0"),
     shipping_address: str | None = None,
+    shipping_destination: Mapping[str, object] | None = None,
     note: str | None = None,
     idempotency_key: str | None = None,
 ) -> Order | None:
@@ -823,6 +989,7 @@ def create_order(
             discount_amount=discount_amount,
             shipping_fee=shipping_fee,
             shipping_address=shipping_address,
+            shipping_destination=shipping_destination,
             note=note,
         )
         if normalized_key is not None
@@ -842,6 +1009,7 @@ def create_order(
             discount_amount=discount_amount,
             shipping_fee=shipping_fee,
             shipping_address=shipping_address,
+            shipping_destination=shipping_destination,
             note=note,
             idempotency_key=normalized_key,
             request_fingerprint=request_fingerprint,
@@ -915,7 +1083,13 @@ def _update_order_impl(
             raise ValueError("currency must not be empty")
         order.currency = currency
     if "shipping_address" in data:
+        if _shipping_destination_is_locked(order):
+            raise ShippingDestinationLockedError(
+                "Shipping destination cannot be edited after dispatch or cancellation"
+            )
         order.shipping_address = _normalise_text(data["shipping_address"])  # type: ignore[arg-type]
+        if order.shipping_address is not None and order.shipping_country_code is None:
+            order.shipping_country_code = "VN"
     if "note" in data:
         order.note = _normalise_text(data["note"])  # type: ignore[arg-type]
     if "discount_amount" in data and data["discount_amount"] is not None:
@@ -953,6 +1127,39 @@ def update_order(
 ) -> Order | None:
     try:
         return _update_order_impl(session, user, order_uuid, data=data)
+    except Exception:
+        session.rollback()
+        raise
+
+
+def update_order_shipping_destination(
+    session: Session,
+    user: User,
+    order_uuid: str,
+    *,
+    destination: Mapping[str, object],
+) -> Order | None:
+    try:
+        order = _resolve_order_for_page(session, user, order_uuid, lock=True)
+        if order is None:
+            return None
+        if _shipping_destination_is_locked(order):
+            raise ShippingDestinationLockedError(
+                "Shipping destination cannot be edited after dispatch or cancellation"
+            )
+
+        normalized = _normalise_shipping_input(destination)
+        before = shipping_destination_for_order(order)
+        _apply_shipping_destination(order, normalized)
+        after = shipping_destination_for_order(order)
+        if before == after:
+            return order
+
+        order.updated_at = datetime.now(UTC)
+        session.add(order)
+        session.commit()
+        session.refresh(order)
+        return order
     except Exception:
         session.rollback()
         raise

@@ -96,7 +96,15 @@ type CreateOrderDraft = {
   currency: string;
   discount_amount: number;
   shipping_fee: number;
+  shipping_recipient_name: string;
+  shipping_recipient_phone: string;
   shipping_address: string;
+  shipping_ward: string;
+  shipping_district: string;
+  shipping_province: string;
+  shipping_postal_code: string;
+  shipping_country_code: string;
+  shipping_note: string;
   note: string;
   items: CreateOrderItemDraft[];
 };
@@ -375,7 +383,17 @@ export function CustomerProfilePanel({
       currency: createOrderDraft.currency.trim().toUpperCase() || "VND",
       discount_amount: createOrderDraft.discount_amount,
       shipping_fee: createOrderDraft.shipping_fee,
-      shipping_address: normaliseOptionalText(createOrderDraft.shipping_address),
+      shipping_destination: {
+        recipient_name: normaliseOptionalText(createOrderDraft.shipping_recipient_name),
+        recipient_phone: normaliseOptionalText(createOrderDraft.shipping_recipient_phone),
+        address_line: normaliseOptionalText(createOrderDraft.shipping_address),
+        ward: normaliseOptionalText(createOrderDraft.shipping_ward),
+        district: normaliseOptionalText(createOrderDraft.shipping_district),
+        province: normaliseOptionalText(createOrderDraft.shipping_province),
+        postal_code: normaliseOptionalText(createOrderDraft.shipping_postal_code),
+        country_code: createOrderDraft.shipping_country_code.trim().toUpperCase() || "VN",
+        note: normaliseOptionalText(createOrderDraft.shipping_note)
+      },
       note: normaliseOptionalText(createOrderDraft.note),
       items: createOrderDraft.items.map(buildOrderItemPayload)
     };
@@ -633,6 +651,7 @@ export function CustomerProfilePanel({
               onClick={() => {
                 setCreateOrderError(null);
                 createOrderIdempotencyRef.current = null;
+                setCreateOrderDraft(buildEmptyOrderDraft(headerName, customerPhone));
                 setCreateOrderOpen(true);
               }}
             >
@@ -996,16 +1015,74 @@ function CreateOrderModal({
           </div>
         </div>
 
+        <Divider orientation="left">Shipping / delivery</Divider>
+        <div className="create-order-grid">
+          <div>
+            <span className="messenger-profile-label">Recipient name</span>
+            <Input
+              aria-label="Recipient name"
+              value={draft.shipping_recipient_name}
+              maxLength={255}
+              onChange={(event) => updateDraft({ shipping_recipient_name: event.target.value })}
+              disabled={submitting}
+            />
+          </div>
+          <div>
+            <span className="messenger-profile-label">Phone</span>
+            <Input
+              aria-label="Phone"
+              value={draft.shipping_recipient_phone}
+              maxLength={32}
+              onChange={(event) => updateDraft({ shipping_recipient_phone: event.target.value })}
+              disabled={submitting}
+            />
+          </div>
+          <div>
+            <span className="messenger-profile-label">Country</span>
+            <Input
+              aria-label="Country"
+              value={draft.shipping_country_code}
+              maxLength={2}
+              onChange={(event) => updateDraft({ shipping_country_code: event.target.value.toUpperCase() })}
+              disabled={submitting}
+            />
+          </div>
+        </div>
         <div>
-          <span className="messenger-profile-label">Shipping address</span>
+          <span className="messenger-profile-label">Address</span>
           <Input.TextArea
+            aria-label="Address"
             value={draft.shipping_address}
             maxLength={5000}
             onChange={(event) => updateDraft({ shipping_address: event.target.value })}
             disabled={submitting}
             autoSize={{ minRows: 2, maxRows: 4 }}
-            placeholder="Optional shipping address"
+            placeholder="Street and address detail"
           />
+        </div>
+        <div className="create-order-grid">
+          <div>
+            <span className="messenger-profile-label">Ward</span>
+            <Input aria-label="Ward" value={draft.shipping_ward} maxLength={255} onChange={(event) => updateDraft({ shipping_ward: event.target.value })} disabled={submitting} />
+          </div>
+          <div>
+            <span className="messenger-profile-label">District</span>
+            <Input aria-label="District" value={draft.shipping_district} maxLength={255} onChange={(event) => updateDraft({ shipping_district: event.target.value })} disabled={submitting} />
+          </div>
+          <div>
+            <span className="messenger-profile-label">Province</span>
+            <Input aria-label="Province" value={draft.shipping_province} maxLength={255} onChange={(event) => updateDraft({ shipping_province: event.target.value })} disabled={submitting} />
+          </div>
+        </div>
+        <div className="create-order-grid">
+          <div>
+            <span className="messenger-profile-label">Postal code</span>
+            <Input aria-label="Postal code" value={draft.shipping_postal_code} maxLength={32} onChange={(event) => updateDraft({ shipping_postal_code: event.target.value })} disabled={submitting} />
+          </div>
+          <div>
+            <span className="messenger-profile-label">Delivery note</span>
+            <Input aria-label="Delivery note" value={draft.shipping_note} maxLength={5000} onChange={(event) => updateDraft({ shipping_note: event.target.value })} disabled={submitting} />
+          </div>
         </div>
 
         <div>
@@ -1541,12 +1618,23 @@ function buildLifecycleUpdatePayload(
   return payload;
 }
 
-function buildEmptyOrderDraft(): CreateOrderDraft {
+function buildEmptyOrderDraft(
+  recipientName: string | null = null,
+  recipientPhone: string | null = null
+): CreateOrderDraft {
   return {
     currency: "VND",
     discount_amount: 0,
     shipping_fee: 0,
+    shipping_recipient_name: recipientName ?? "",
+    shipping_recipient_phone: recipientPhone ?? "",
     shipping_address: "",
+    shipping_ward: "",
+    shipping_district: "",
+    shipping_province: "",
+    shipping_postal_code: "",
+    shipping_country_code: "VN",
+    shipping_note: "",
     note: "",
     items: [buildEmptyOrderItemDraft()]
   };
@@ -1577,6 +1665,24 @@ function validateCreateOrderDraft(draft: CreateOrderDraft): string | null {
   }
   if (draft.shipping_address.length > 5000) {
     return "Shipping address must be 5,000 characters or fewer.";
+  }
+  if (draft.shipping_recipient_name.length > 255) {
+    return "Recipient name must be 255 characters or fewer.";
+  }
+  if (draft.shipping_recipient_phone.length > 32) {
+    return "Phone must be 32 characters or fewer.";
+  }
+  if (draft.shipping_country_code.trim().length !== 2) {
+    return "Country must be a 2-letter code.";
+  }
+  if ([draft.shipping_ward, draft.shipping_district, draft.shipping_province].some((value) => value.length > 255)) {
+    return "Ward, district, and province must be 255 characters or fewer.";
+  }
+  if (draft.shipping_postal_code.length > 32) {
+    return "Postal code must be 32 characters or fewer.";
+  }
+  if (draft.shipping_note.length > 5000) {
+    return "Delivery note must be 5,000 characters or fewer.";
   }
   if (draft.note.length > 5000) {
     return "Order note must be 5,000 characters or fewer.";

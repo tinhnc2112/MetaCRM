@@ -44,6 +44,31 @@ export type ProductOrderItemCreate = {
 
 export type OrderItemCreate = ManualOrderItemCreate | ProductOrderItemCreate;
 
+export type ShippingDestinationInput = {
+  recipient_name?: string | null;
+  recipient_phone?: string | null;
+  address_line?: string | null;
+  ward?: string | null;
+  district?: string | null;
+  province?: string | null;
+  postal_code?: string | null;
+  country_code?: string | null;
+  note?: string | null;
+};
+
+export type ShippingDestination = {
+  recipient_name: string | null;
+  recipient_phone: string | null;
+  address_line: string | null;
+  ward: string | null;
+  district: string | null;
+  province: string | null;
+  postal_code: string | null;
+  country_code: string;
+  note: string | null;
+  is_complete: boolean;
+};
+
 export type OrderCreatePayload = {
   customer_uuid: string;
   conversation_uuid?: string | null;
@@ -52,6 +77,7 @@ export type OrderCreatePayload = {
   discount_amount?: number;
   shipping_fee?: number;
   shipping_address?: string | null;
+  shipping_destination?: ShippingDestinationInput | null;
   note?: string | null;
 };
 
@@ -87,6 +113,7 @@ export type OrderListItem = {
 };
 
 export type OrderResponse = OrderListItem & {
+  shipping_destination: ShippingDestination | null;
   items: OrderItem[];
   deleted_at: string | null;
 };

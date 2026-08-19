@@ -645,6 +645,311 @@ def test_create_order_calculates_totals_and_snapshots(client: TestClient, sessio
     assert session.query(OrderItem).filter(OrderItem.order_id == order_row.id).count() == 2
 
 
+def test_shipping_destination_create_detail_and_customer_snapshot_independence(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-shipping-destination")
+    _select_page(session, alice, page)
+    customer = _make_customer(
+        session,
+        name="Original Recipient",
+        phone="090 123 4567",
+        default_address="Legacy customer address",
+    )
+    _make_conversation(
+        session,
+        page,
+        psid="psid-shipping-destination",
+        customer_id=customer.id,
+    )
+    payload = {
+        "customer_uuid": str(customer.public_id),
+        "items": [{"item_name": "Parcel", "quantity": 1, "unit_price": 10}],
+        "shipping_destination": {
+            "recipient_name": "  Nguyễn Văn An  ",
+            "recipient_phone": " 090 123 4567 ",
+            "address_line": "  12 Đường Hoa Mai  ",
+            "ward": " Phường Bến Nghé ",
+            "district": " Quận 1 ",
+            "province": " Thành phố Hồ Chí Minh ",
+            "postal_code": " 700000 ",
+            "country_code": " vn ",
+            "note": " Gọi trước khi giao ",
+        },
+    }
+
+    created = client.post("/api/v1/facebook/orders", headers=_auth(alice), json=payload)
+
+    assert created.status_code == 200
+    destination = created.json()["shipping_destination"]
+    assert destination == {
+        "recipient_name": "Nguyễn Văn An",
+        "recipient_phone": "090 123 4567",
+        "address_line": "12 Đường Hoa Mai",
+        "ward": "Phường Bến Nghé",
+        "district": "Quận 1",
+        "province": "Thành phố Hồ Chí Minh",
+        "postal_code": "700000",
+        "country_code": "VN",
+        "note": "Gọi trước khi giao",
+        "is_complete": True,
+    }
+    order = session.query(Order).filter_by(public_id=UUID(created.json()["uuid"])).one()
+    assert order.shipping_recipient_phone_normalized == "+84901234567"
+
+    customer.name = "Changed Customer"
+    customer.phone = "0987654321"
+    customer.default_address = "Changed customer address"
+    session.commit()
+    detail = client.get(
+        f"/api/v1/facebook/orders/{created.json()['uuid']}",
+        headers=_auth(alice),
+    )
+    assert detail.status_code == 200
+    assert detail.json()["shipping_destination"] == destination
+
+
+def test_shipping_destination_absent_and_partial_orders_remain_valid(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-shipping-partial")
+    _select_page(session, alice, page)
+    customer = _make_customer(session, name="Fallback Recipient", phone="0901111222")
+    _make_conversation(session, page, psid="psid-shipping-partial", customer_id=customer.id)
+    base = {
+        "customer_uuid": str(customer.public_id),
+        "items": [{"item_name": "Parcel", "quantity": 1, "unit_price": 10}],
+    }
+
+    absent = client.post("/api/v1/facebook/orders", headers=_auth(alice), json=base)
+    partial = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={**base, "shipping_destination": {"province": " Hà Nội "}},
+    )
+    explicitly_empty = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={**base, "shipping_destination": {}},
+    )
+
+    assert absent.status_code == 200
+    assert absent.json()["shipping_destination"]["recipient_name"] == "Fallback Recipient"
+    assert absent.json()["shipping_destination"]["is_complete"] is False
+    assert partial.status_code == 200
+    assert partial.json()["shipping_destination"] == {
+        "recipient_name": None,
+        "recipient_phone": None,
+        "address_line": None,
+        "ward": None,
+        "district": None,
+        "province": "Hà Nội",
+        "postal_code": None,
+        "country_code": "VN",
+        "note": None,
+        "is_complete": False,
+    }
+    assert explicitly_empty.status_code == 200
+    assert explicitly_empty.json()["shipping_destination"] is None
+
+
+@pytest.mark.parametrize(
+    "shipping_destination",
+    [
+        {"recipient_phone": "not-a-phone"},
+        {"country_code": "V1", "province": "Hà Nội"},
+    ],
+)
+def test_shipping_destination_rejects_invalid_phone_and_country(
+    client: TestClient,
+    session: Session,
+    shipping_destination: dict[str, str],
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, f"page-shipping-validation-{uuid4()}")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, f"shipping-validation-{uuid4()}")
+
+    response = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [{"item_name": "Parcel", "quantity": 1, "unit_price": 10}],
+            "shipping_destination": shipping_destination,
+        },
+    )
+
+    assert response.status_code == 422
+    assert session.query(Order).count() == 0
+
+
+def test_shipping_destination_is_part_of_create_idempotency_fingerprint(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-shipping-idempotency")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "shipping-idempotency")
+    key = str(uuid4())
+    payload = {
+        "customer_uuid": str(customer.public_id),
+        "items": [{"item_name": "Parcel", "quantity": 1, "unit_price": 10}],
+        "shipping_destination": {
+            "recipient_name": "Recipient",
+            "recipient_phone": "0901234567",
+            "address_line": "10 First Street",
+            "ward": "Ward 1",
+            "district": "District 1",
+            "province": "Hồ Chí Minh",
+        },
+    }
+
+    first = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json=payload,
+    )
+    equivalent = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json={
+            **payload,
+            "shipping_destination": {
+                **payload["shipping_destination"],
+                "recipient_name": " Recipient ",
+                "recipient_phone": "090 123 4567",
+                "country_code": "vn",
+            },
+        },
+    )
+    changed = client.post(
+        "/api/v1/facebook/orders",
+        headers=_idempotency_headers(alice, key),
+        json={
+            **payload,
+            "shipping_destination": {
+                **payload["shipping_destination"],
+                "address_line": "11 Changed Street",
+            },
+        },
+    )
+
+    assert first.status_code == equivalent.status_code == 200
+    assert first.json()["uuid"] == equivalent.json()["uuid"]
+    assert changed.status_code == 409
+    assert session.query(Order).count() == 1
+
+
+def test_shipping_destination_update_is_page_safe_repeatable_and_stock_neutral(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page_a = _make_page(session, alice, "page-shipping-update-a")
+    page_b = _make_page(session, alice, "page-shipping-update-b")
+    _select_page(session, alice, page_a)
+    customer = _order_customer(session, page_a, "shipping-update")
+    product = _make_product(session, page_a, name="Shipping Neutral", tracked=True)
+    _enable_inventory(client, alice, product, 5)
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "status": "confirmed",
+            "payment_status": "partial",
+            "shipping_status": "packed",
+            "items": [{"product_uuid": str(product.public_id), "quantity": 2}],
+        },
+    )
+    assert created.status_code == 200
+    order_uuid = created.json()["uuid"]
+    update_payload = {
+        "recipient_name": "Packed Recipient",
+        "recipient_phone": "0912345678",
+        "address_line": "20 Packed Street",
+        "ward": "Ward 2",
+        "district": "District 2",
+        "province": "Đà Nẵng",
+    }
+    before_events = session.query(OrderEvent).count()
+    before_updated_at = created.json()["updated_at"]
+
+    updated = client.patch(
+        f"/api/v1/facebook/orders/{order_uuid}/shipping-address",
+        headers=_auth(alice),
+        json=update_payload,
+    )
+    same_value = client.patch(
+        f"/api/v1/facebook/orders/{order_uuid}/shipping-address",
+        headers=_auth(alice),
+        json=update_payload,
+    )
+
+    assert updated.status_code == same_value.status_code == 200
+    assert updated.json()["status"] == "confirmed"
+    assert updated.json()["payment_status"] == "partial"
+    assert updated.json()["shipping_status"] == "packed"
+    assert same_value.json()["updated_at"] == updated.json()["updated_at"]
+    assert updated.json()["updated_at"] != before_updated_at
+    assert session.query(OrderEvent).count() == before_events
+    assert session.query(ProductInventory).one().quantity_on_hand == 3
+    assert session.query(StockMovement).filter_by(movement_type="ORDER_OUT").count() == 1
+
+    _select_page(session, alice, page_b)
+    cross_page = client.patch(
+        f"/api/v1/facebook/orders/{order_uuid}/shipping-address",
+        headers=_auth(alice),
+        json={**update_payload, "address_line": "Leaked"},
+    )
+    assert cross_page.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("order_status", "shipping_status"),
+    [
+        ("cancelled", "pending"),
+        ("confirmed", "shipped"),
+        ("confirmed", "delivered"),
+        ("confirmed", "cancelled"),
+    ],
+)
+def test_shipping_destination_update_is_blocked_after_dispatch_or_cancellation(
+    client: TestClient,
+    session: Session,
+    order_status: str,
+    shipping_status: str,
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, f"page-shipping-locked-{order_status}-{shipping_status}")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, f"shipping-locked-{order_status}-{shipping_status}")
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [{"item_name": "Parcel", "quantity": 1, "unit_price": 10}],
+        },
+    )
+    order = session.query(Order).filter_by(public_id=UUID(created.json()["uuid"])).one()
+    order.status = order_status
+    order.shipping_status = shipping_status
+    session.commit()
+
+    response = client.patch(
+        f"/api/v1/facebook/orders/{order.public_id}/shipping-address",
+        headers=_auth(alice),
+        json={"address_line": "Blocked change"},
+    )
+
+    assert response.status_code == 409
+    session.refresh(order)
+    assert order.shipping_address is None
+
+
 def test_product_backed_items_snapshot_defaults_and_price_override(client: TestClient, session: Session) -> None:
     alice, _ = _get_users(session)
     page = _make_page(session, alice, "page-order-product")

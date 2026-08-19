@@ -23,6 +23,8 @@ from app.schemas.orders import (
     OrderTimelineActor,
     OrderTimelineResponse,
     OrderUpdate,
+    ShippingDestinationInput,
+    ShippingDestinationResponse,
 )
 from app.services.facebook.inventory import InsufficientInventoryError, InventoryStateError
 from app.services.facebook.orders import (
@@ -31,6 +33,7 @@ from app.services.facebook.orders import (
     OrderEventTimelineRecord,
     OrderIdempotencyConflictError,
     OrderOperationalQueue,
+    ShippingDestinationLockedError,
     create_order,
     get_customer_order_summary,
     get_customer_orders,
@@ -38,7 +41,9 @@ from app.services.facebook.orders import (
     get_order_operational_summary,
     get_order_timeline,
     list_orders,
+    shipping_destination_for_order,
     update_order,
+    update_order_shipping_destination,
 )
 from app.services.facebook.pages import get_current_page
 from app.services.facebook.products import ProductUnavailableError
@@ -67,6 +72,24 @@ def _serialize_item(item) -> OrderItemResponse:
     )
 
 
+def _serialize_shipping_destination(order) -> ShippingDestinationResponse | None:
+    destination = shipping_destination_for_order(order)
+    if destination is None:
+        return None
+    return ShippingDestinationResponse(
+        recipient_name=destination.recipient_name,
+        recipient_phone=destination.recipient_phone,
+        address_line=destination.address_line,
+        ward=destination.ward,
+        district=destination.district,
+        province=destination.province,
+        postal_code=destination.postal_code,
+        country_code=destination.country_code,
+        note=destination.note,
+        is_complete=destination.is_complete,
+    )
+
+
 def _serialize_order(order) -> OrderResponse:
     return OrderResponse(
         uuid=str(order.public_id),
@@ -91,6 +114,7 @@ def _serialize_order(order) -> OrderResponse:
         created_at=order.created_at,
         updated_at=order.updated_at,
         cancelled_at=order.cancelled_at,
+        shipping_destination=_serialize_shipping_destination(order),
         items=[_serialize_item(item) for item in order.items],
         deleted_at=order.deleted_at,
     )
@@ -314,6 +338,11 @@ def create_order_endpoint(
             discount_amount=payload.discount_amount,
             shipping_fee=payload.shipping_fee,
             shipping_address=payload.shipping_address,
+            shipping_destination=(
+                payload.shipping_destination.model_dump()
+                if payload.shipping_destination is not None
+                else None
+            ),
             note=payload.note,
             idempotency_key=idempotency_key,
         )
@@ -328,6 +357,41 @@ def create_order_endpoint(
 
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer or conversation not found")
+    return _serialize_order(order)
+
+
+@router.patch("/orders/{order_id}/shipping-address", response_model=OrderResponse)
+def update_order_shipping_destination_endpoint(
+    order_id: str,
+    payload: ShippingDestinationInput,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> OrderResponse:
+    try:
+        UUID(order_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Order not found",
+        ) from None
+
+    try:
+        order = update_order_shipping_destination(
+            session,
+            current_user,
+            order_id,
+            destination=payload.model_dump(),
+        )
+    except ShippingDestinationLockedError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     return _serialize_order(order)
 
 
@@ -354,6 +418,8 @@ def update_order_endpoint(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+    except ShippingDestinationLockedError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except (InsufficientInventoryError, InventoryStateError) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:

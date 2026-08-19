@@ -8,7 +8,8 @@ import type {
   OrderResponse,
   OrderStatus,
   OrderTimelineResponse,
-  OrderUpdatePayload
+  OrderUpdatePayload,
+  ShippingDestinationInput
 } from "../types/order";
 
 export async function listOrders(input?: OrderListFilters): Promise<OrderListResponse> {
@@ -86,6 +87,17 @@ export async function createOrder(
 export async function updateOrder(orderUuid: string, payload: OrderUpdatePayload): Promise<OrderResponse> {
   const response = await apiClient.patch<OrderResponse>(
     `/api/v1/facebook/orders/${encodeURIComponent(orderUuid)}`,
+    payload
+  );
+  return response.data;
+}
+
+export async function updateOrderShippingDestination(
+  orderUuid: string,
+  payload: ShippingDestinationInput
+): Promise<OrderResponse> {
+  const response = await apiClient.patch<OrderResponse>(
+    `/api/v1/facebook/orders/${encodeURIComponent(orderUuid)}/shipping-address`,
     payload
   );
   return response.data;
