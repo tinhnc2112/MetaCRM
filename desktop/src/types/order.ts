@@ -56,6 +56,7 @@ export type OrderListItem = {
   uuid: string;
   order_number: string;
   customer_uuid: string;
+  customer_name: string | null;
   customer_name_snapshot: string | null;
   customer_phone_snapshot: string | null;
   customer_email_snapshot: string | null;
@@ -84,6 +85,15 @@ export type OrderResponse = OrderListItem & {
 export type OrderListResponse = {
   items: OrderListItem[];
   meta: PaginationMeta;
+};
+
+export type OrderListFilters = {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  orderStatus?: OrderStatus;
+  paymentStatus?: PaymentStatus;
+  shippingStatus?: ShippingStatus;
 };
 
 export type CustomerOrderSummary = {

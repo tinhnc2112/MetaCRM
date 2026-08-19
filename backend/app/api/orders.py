@@ -62,6 +62,7 @@ def _serialize_order(order) -> OrderResponse:
         uuid=str(order.public_id),
         order_number=order.order_number,
         customer_uuid=str(order.customer.public_id),
+        customer_name=order.customer.name,
         customer_name_snapshot=order.customer_name_snapshot,
         customer_phone_snapshot=order.customer_phone_snapshot,
         customer_email_snapshot=order.customer_email_snapshot,
@@ -85,15 +86,19 @@ def _serialize_order(order) -> OrderResponse:
     )
 
 
-def _serialize_order_list_item(order) -> OrderListItem:
+def _serialize_order_list_item(record) -> OrderListItem:
+    order = record.order
     return OrderListItem(
         uuid=str(order.public_id),
         order_number=order.order_number,
-        customer_uuid=str(order.customer.public_id),
+        customer_uuid=str(record.customer_uuid),
+        customer_name=record.customer_name,
         customer_name_snapshot=order.customer_name_snapshot,
         customer_phone_snapshot=order.customer_phone_snapshot,
         customer_email_snapshot=order.customer_email_snapshot,
-        conversation_uuid=str(order.conversation.uuid) if order.conversation is not None else None,
+        conversation_uuid=(
+            str(record.conversation_uuid) if record.conversation_uuid is not None else None
+        ),
         status=order.status,
         payment_status=order.payment_status,
         shipping_status=order.shipping_status,
@@ -102,7 +107,7 @@ def _serialize_order_list_item(order) -> OrderListItem:
         discount_amount=_money(order.discount_amount),
         shipping_fee=_money(order.shipping_fee),
         total_amount=_money(order.total_amount),
-        item_count=len(order.items),
+        item_count=record.item_count,
         shipping_address=order.shipping_address,
         note=order.note,
         created_at=order.created_at,
@@ -137,13 +142,12 @@ def list_orders_endpoint(
     session: Annotated[Session, Depends(get_db_session)],
     customer_uuid: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
+    payment_status: str | None = Query(default=None),
+    shipping_status: str | None = Query(default=None),
     q: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> OrderListResponse:
-    if get_current_page(session, current_user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Facebook page is not selected")
-
     result = None
     try:
         if customer_uuid is not None:
@@ -154,6 +158,8 @@ def list_orders_endpoint(
                 page=page,
                 page_size=page_size,
                 status=status_filter,
+                payment_status=payment_status,
+                shipping_status=shipping_status,
                 q=q,
             )
             if result is None:
@@ -165,8 +171,15 @@ def list_orders_endpoint(
                 page=page,
                 page_size=page_size,
                 status=status_filter,
+                payment_status=payment_status,
+                shipping_status=shipping_status,
                 q=q,
             )
+            if result is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Facebook page is not selected",
+                )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -278,6 +291,8 @@ def customer_order_history_endpoint(
     current_user: Annotated[User, Depends(require_active_user)],
     session: Annotated[Session, Depends(get_db_session)],
     status_filter: str | None = Query(default=None, alias="status"),
+    payment_status: str | None = Query(default=None),
+    shipping_status: str | None = Query(default=None),
     q: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -293,6 +308,8 @@ def customer_order_history_endpoint(
             page=page,
             page_size=page_size,
             status=status_filter,
+            payment_status=payment_status,
+            shipping_status=shipping_status,
             q=q,
         )
     except ValueError as exc:

@@ -36,6 +36,9 @@ function getHeaderTitle(pathname: string): string {
   if (pathname.startsWith("/products")) {
     return "Products";
   }
+  if (pathname.startsWith("/orders")) {
+    return "Orders";
+  }
   if (pathname.startsWith("/settings/facebook")) {
     return "Facebook Settings";
   }

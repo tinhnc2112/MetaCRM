@@ -21,13 +21,13 @@ from app.models.orders import Order, OrderItem
 from app.models.products import Product
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.inventory import inventory_reconciles
-from app.services.facebook.orders import build_order_create_fingerprint
+from app.services.facebook.orders import build_order_create_fingerprint, list_orders
 from app.services.facebook.pages import select_current_page
 from app.utils.jwt import create_access_token
 from app.utils.password import hash_password
 from app.websocket.manager import ConnectionManager
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -958,6 +958,146 @@ def test_order_list_and_history_include_correct_item_counts(client: TestClient, 
     assert history_counts[second.json()["uuid"]] == 1
 
 
+def test_order_workspace_filters_search_and_page_scope(
+    client: TestClient, session: Session
+) -> None:
+    alice, bob = _get_users(session)
+    page = _make_page(session, alice, "page-order-workspace")
+    other_page = _make_page(session, bob, "page-order-workspace-other")
+    _select_page(session, alice, page)
+    customer = _make_customer(session, name="Workspace Buyer")
+    other_customer = _make_customer(session, name="Foreign Workspace Buyer")
+    _make_conversation(session, page, psid="psid-order-workspace", customer_id=customer.id)
+    _make_conversation(
+        session,
+        other_page,
+        psid="psid-order-workspace-other",
+        customer_id=other_customer.id,
+    )
+
+    draft = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "payment_status": "unpaid",
+            "shipping_status": "pending",
+            "items": [{"item_name": "Draft item", "quantity": 1, "unit_price": 10}],
+        },
+    )
+    confirmed = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "status": "confirmed",
+            "payment_status": "paid",
+            "shipping_status": "packed",
+            "items": [{"item_name": "Confirmed item", "quantity": 2, "unit_price": 20}],
+        },
+    )
+    assert draft.status_code == confirmed.status_code == 200
+
+    _select_page(session, bob, other_page)
+    foreign = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(bob),
+        json={
+            "customer_uuid": str(other_customer.public_id),
+            "status": "confirmed",
+            "payment_status": "paid",
+            "shipping_status": "packed",
+            "items": [{"item_name": "Foreign item", "quantity": 1, "unit_price": 99}],
+        },
+    )
+    assert foreign.status_code == 200
+    _select_page(session, alice, page)
+
+    combined = client.get(
+        "/api/v1/facebook/orders?status=confirmed&payment_status=paid&shipping_status=packed",
+        headers=_auth(alice),
+    )
+    assert combined.status_code == 200
+    assert combined.json()["meta"]["total"] == 1
+    assert combined.json()["items"][0]["uuid"] == confirmed.json()["uuid"]
+    assert combined.json()["items"][0]["item_count"] == 1
+    assert combined.json()["items"][0]["total_amount"] == "40.00"
+    assert combined.json()["items"][0]["customer_name"] == "Workspace Buyer"
+
+    by_order_number = client.get(
+        f"/api/v1/facebook/orders?q={confirmed.json()['order_number'][4:12]}",
+        headers=_auth(alice),
+    )
+    assert by_order_number.status_code == 200
+    assert by_order_number.json()["meta"]["total"] >= 1
+    assert foreign.json()["uuid"] not in {
+        item["uuid"] for item in by_order_number.json()["items"]
+    }
+
+    by_customer = client.get(
+        "/api/v1/facebook/orders?q=Workspace%20Buyer&page=1&page_size=1",
+        headers=_auth(alice),
+    )
+    assert by_customer.status_code == 200
+    assert by_customer.json()["meta"]["total"] == 2
+    assert len(by_customer.json()["items"]) == 1
+
+
+def test_order_workspace_list_has_constant_query_count(session: Session) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-workspace-query-count")
+    _select_page(session, alice, page)
+    customer = _make_customer(session, name="Query Count Buyer")
+    _make_conversation(
+        session,
+        page,
+        psid="psid-order-workspace-query-count",
+        customer_id=customer.id,
+    )
+    for index in range(3):
+        order = Order(
+            facebook_page_id=page.id,
+            customer_id=customer.id,
+            order_number=f"ORD-QUERY-{index}",
+            customer_name_snapshot=customer.name,
+            created_by_id=alice.id,
+        )
+        session.add(order)
+        session.flush()
+        session.add_all(
+            [
+                OrderItem(
+                    order_id=order.id,
+                    item_name=f"Item {item_index}",
+                    quantity=1,
+                    unit_price=Decimal("1"),
+                    line_total=Decimal("1"),
+                )
+                for item_index in range(index + 1)
+            ]
+        )
+    session.commit()
+
+    audit_session = Session(bind=session.get_bind())
+    audit_user = audit_session.get(User, alice.id)
+    statements: list[str] = []
+
+    def capture_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(session.get_bind(), "before_cursor_execute", capture_statement)
+    try:
+        result = list_orders(audit_session, audit_user, page=1, page_size=20)
+        assert result is not None
+        assert [record.item_count for record in result.items] == [3, 2, 1]
+        assert all(record.customer_name == "Query Count Buyer" for record in result.items)
+    finally:
+        event.remove(session.get_bind(), "before_cursor_execute", capture_statement)
+        audit_session.close()
+
+    assert len(statements) == 4
+
+
 def test_customer_order_summary_is_page_scoped_and_excludes_cancelled_spend(
     client: TestClient,
     session: Session,
@@ -1022,6 +1162,10 @@ def test_invalid_status_filters_return_422(client: TestClient, session: Session)
         headers=_auth(alice),
     )
     assert history_response.status_code == 422
+
+    for query in ("payment_status=unknown", "shipping_status=unknown"):
+        response = client.get(f"/api/v1/facebook/orders?{query}", headers=_auth(alice))
+        assert response.status_code == 422
 
 
 def test_invalid_uuid_handling_returns_404(client: TestClient, session: Session) -> None:
@@ -1211,6 +1355,8 @@ def test_merge_transfers_orders_to_primary_customer(client: TestClient, session:
     assert history.status_code == 200
     assert history.json()["meta"]["total"] == 1
     assert history.json()["items"][0]["uuid"] == order_uuid
+    assert history.json()["items"][0]["customer_uuid"] == str(primary.public_id)
+    assert history.json()["items"][0]["customer_name"] == primary.name
 
     secondary_history = client.get(
         f"/api/v1/facebook/customers/{secondary.public_id}/orders",

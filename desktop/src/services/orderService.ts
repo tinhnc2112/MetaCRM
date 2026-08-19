@@ -2,11 +2,26 @@ import { apiClient } from "./apiClient";
 import type {
   CustomerOrderSummary,
   OrderCreatePayload,
+  OrderListFilters,
   OrderListResponse,
   OrderResponse,
   OrderStatus,
   OrderUpdatePayload
 } from "../types/order";
+
+export async function listOrders(input?: OrderListFilters): Promise<OrderListResponse> {
+  const response = await apiClient.get<OrderListResponse>("/api/v1/facebook/orders", {
+    params: {
+      page: input?.page,
+      page_size: input?.pageSize,
+      q: input?.search,
+      status: input?.orderStatus,
+      payment_status: input?.paymentStatus,
+      shipping_status: input?.shippingStatus
+    }
+  });
+  return response.data;
+}
 
 export async function listCustomerOrders(
   customerUuid: string,

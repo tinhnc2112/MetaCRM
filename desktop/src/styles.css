@@ -1129,6 +1129,121 @@ body {
   gap: 16px;
 }
 
+.order-operations-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.order-operations-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.order-operations-header h2 {
+  margin-bottom: 4px;
+}
+
+.order-operations-section {
+  padding: 20px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.order-operations-toolbar {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) repeat(3, minmax(150px, 190px));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.order-operations-toolbar .ant-select {
+  width: 100%;
+}
+
+.order-page-loading,
+.order-detail-loading {
+  min-height: 240px;
+  display: grid;
+  place-items: center;
+}
+
+.order-number-link,
+.order-customer-cell .ant-btn-link {
+  height: auto;
+  padding: 0;
+  text-align: left;
+}
+
+.order-customer-cell,
+.order-detail-item-name {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.order-operations-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.order-operations-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 8px;
+}
+
+.order-detail-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.order-detail-operations {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #eff6ff;
+}
+
+.order-detail-operations h5 {
+  margin: 0 0 2px;
+}
+
+.order-detail-status-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.order-detail-status-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #374151;
+  font-weight: 500;
+}
+
+.order-detail-status-fields .ant-select {
+  width: 100%;
+}
+
+.order-detail-item {
+  gap: 16px;
+}
+
 .product-management-header {
   display: flex;
   align-items: flex-start;
@@ -1302,6 +1417,17 @@ body {
 
   .product-management-header {
     flex-direction: column;
+  }
+
+  .order-operations-header,
+  .order-operations-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .order-operations-toolbar,
+  .order-detail-status-fields {
+    grid-template-columns: 1fr;
   }
 
   .product-management-toolbar {

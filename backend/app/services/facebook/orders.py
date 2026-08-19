@@ -22,7 +22,7 @@ from app.services.facebook.pages import get_current_page
 from app.services.facebook.products import resolve_product_for_order_item
 from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, noload
 
 MONEY_QUANTUM = Decimal("0.01")
 MAX_MONEY = Decimal("9999999999.99")
@@ -62,6 +62,15 @@ class CustomerOrderSummary:
     order_count: int
     total_spend: Decimal
     latest_order_at: datetime | None
+
+
+@dataclass(frozen=True)
+class OrderListRecord:
+    order: Order
+    item_count: int
+    customer_uuid: UUID
+    customer_name: str | None
+    conversation_uuid: UUID | None
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -378,8 +387,10 @@ def list_orders(
     page_size: int = 20,
     customer_id: int | None = None,
     status: str | None = None,
+    payment_status: str | None = None,
+    shipping_status: str | None = None,
     q: str | None = None,
-) -> PaginatedResult[Order] | None:
+) -> PaginatedResult[OrderListRecord] | None:
     page_obj = _current_page(session, user)
     if page_obj is None:
         return None
@@ -387,20 +398,36 @@ def list_orders(
     page_size = min(page_size, 100)
     page = max(page, 1)
 
-    query = session.query(Order).filter(
-        Order.facebook_page_id == page_obj.id,
-        Order.deleted_at.is_(None),
-        _order_conversation_is_page_consistent(page_obj.id),
+    query = (
+        session.query(Order)
+        .outerjoin(Customer, Customer.id == Order.customer_id)
+        .outerjoin(Conversation, Conversation.id == Order.conversation_id)
+        .filter(
+            Order.facebook_page_id == page_obj.id,
+            Order.deleted_at.is_(None),
+            _order_conversation_is_page_consistent(page_obj.id),
+        )
     )
     if customer_id is not None:
         query = query.filter(Order.customer_id == customer_id)
     if status:
         query = query.filter(Order.status == _validate_status(status, ORDER_STATUSES, "status"))
+    if payment_status:
+        query = query.filter(
+            Order.payment_status
+            == _validate_status(payment_status, PAYMENT_STATUSES, "payment status")
+        )
+    if shipping_status:
+        query = query.filter(
+            Order.shipping_status
+            == _validate_status(shipping_status, SHIPPING_STATUSES, "shipping status")
+        )
     if q and q.strip():
         search = f"%{q.strip().lower()}%"
         query = query.filter(
             or_(
                 Order.order_number.ilike(search),
+                Customer.name.ilike(search),
                 Order.customer_name_snapshot.ilike(search),
                 Order.customer_phone_snapshot.ilike(search),
                 Order.customer_email_snapshot.ilike(search),
@@ -410,12 +437,35 @@ def list_orders(
         )
 
     total = query.count()
-    items = (
-        query.order_by(Order.created_at.desc(), Order.id.desc())
+    item_count = (
+        session.query(func.count(OrderItem.id))
+        .filter(OrderItem.order_id == Order.id)
+        .correlate(Order)
+        .scalar_subquery()
+    )
+    rows = (
+        query.options(noload(Order.items), noload(Order.customer), noload(Order.conversation))
+        .add_columns(
+            item_count.label("item_count"),
+            Customer.public_id.label("customer_uuid"),
+            Customer.name.label("customer_name"),
+            Conversation.uuid.label("conversation_uuid"),
+        )
+        .order_by(Order.created_at.desc(), Order.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
+    items = [
+        OrderListRecord(
+            order=order,
+            item_count=int(count or 0),
+            customer_uuid=customer_uuid,
+            customer_name=customer_name,
+            conversation_uuid=conversation_uuid,
+        )
+        for order, count, customer_uuid, customer_name, conversation_uuid in rows
+    ]
     return PaginatedResult(items=items, total=total, page=page, page_size=page_size)
 
 
@@ -722,8 +772,10 @@ def get_customer_orders(
     page: int = 1,
     page_size: int = 20,
     status: str | None = None,
+    payment_status: str | None = None,
+    shipping_status: str | None = None,
     q: str | None = None,
-) -> PaginatedResult[Order] | None:
+) -> PaginatedResult[OrderListRecord] | None:
     customer = _resolve_customer_for_page(session, user, customer_uuid)
     if customer is None:
         return None
@@ -735,6 +787,8 @@ def get_customer_orders(
         page_size=page_size,
         customer_id=customer.id,
         status=status,
+        payment_status=payment_status,
+        shipping_status=shipping_status,
         q=q,
     )
 

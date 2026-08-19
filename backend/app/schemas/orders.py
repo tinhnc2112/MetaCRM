@@ -84,6 +84,7 @@ class OrderListItem(BaseModel):
     uuid: str
     order_number: str
     customer_uuid: str
+    customer_name: str | None = None
     customer_name_snapshot: str | None = None
     customer_phone_snapshot: str | None = None
     customer_email_snapshot: str | None = None

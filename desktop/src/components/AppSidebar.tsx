@@ -3,6 +3,7 @@ import {
   FacebookOutlined,
   FilterOutlined,
   MessageOutlined,
+  ShoppingCartOutlined,
   ShoppingOutlined,
   SettingOutlined,
   TeamOutlined,
@@ -48,6 +49,11 @@ export function AppSidebar() {
             key: "/products",
             icon: <ShoppingOutlined />,
             label: "Products"
+          },
+          {
+            key: "/orders",
+            icon: <ShoppingCartOutlined />,
+            label: "Orders"
           },
           {
             key: "settings",
