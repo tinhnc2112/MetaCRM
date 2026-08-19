@@ -32,6 +32,11 @@ def _utc(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
+def _descending_nulls_last(column):
+    """Return portable descending ordering with null values placed last."""
+    return column.is_(None).asc(), column.desc()
+
+
 @dataclass(frozen=True)
 class CustomerTimelineItem:
     type: Literal["message", "note", "tag"]
@@ -120,7 +125,7 @@ def _customer_conversations_for_page(session: Session, customer_id: int, faceboo
             Conversation.deleted_at.is_(None),
         )
         .order_by(
-            Conversation.last_message_at.desc().nulls_last(),
+            *_descending_nulls_last(Conversation.last_message_at),
             Conversation.created_at.desc(),
             Conversation.id.desc(),
         )
@@ -175,7 +180,7 @@ def _build_customer_profile(
     messages = (
         session.query(Message)
         .filter(Message.conversation_id.in_(conversation_ids))
-        .order_by(Message.fb_timestamp_ms.desc().nulls_last(), Message.id.desc())
+        .order_by(*_descending_nulls_last(Message.fb_timestamp_ms), Message.id.desc())
         .all()
     )
     sorted_conversations = sorted(conversations, key=_conversation_sort_key, reverse=True)
@@ -299,7 +304,7 @@ def list_customers(
             Customer.merged_into_customer_id.is_(None),
         )
         .order_by(
-            Conversation.last_message_at.desc().nulls_last(),
+            *_descending_nulls_last(Conversation.last_message_at),
             Conversation.created_at.desc(),
             Conversation.id.desc(),
         )

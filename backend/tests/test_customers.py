@@ -16,12 +16,14 @@ from app.models.customers import CustomerNote
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation, Message
 from app.services.facebook.crypto import TokenCipher
+from app.services.facebook.customers import _descending_nulls_last
 from app.services.facebook.pages import select_current_page
 from app.utils.jwt import create_access_token
 from app.utils.password import hash_password
 from app.websocket.manager import ConnectionManager
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -335,6 +337,87 @@ def test_customer_list_returns_canonical_customers_sorted_and_paginated(
     assert second_body["items"][0]["uuid"] == str(other_customer.public_id)
     assert all(item["uuid"] != str(secondary_customer.public_id) for item in first_body["items"] + second_body["items"])
     assert all(item["uuid"] != str(bob_customer.public_id) for item in first_body["items"] + second_body["items"])
+
+
+def test_customer_ordering_is_mysql_compatible_and_places_nulls_last(session: Session) -> None:
+    alice, bob = _get_users(session)
+    alice_page = _make_page(session, alice, "page-customer-ordering-alice")
+    bob_page = _make_page(session, bob, "page-customer-ordering-bob")
+
+    newest = _make_conversation(session, alice_page, "psid-order-newest")
+    older = _make_conversation(session, alice_page, "psid-order-older")
+    no_timestamp = _make_conversation(session, alice_page, "psid-order-null")
+    _make_conversation(session, bob_page, "psid-order-other-page")
+    newest.last_message_at = datetime(2026, 8, 15, 12, 0, tzinfo=UTC)
+    older.last_message_at = datetime(2026, 8, 15, 10, 0, tzinfo=UTC)
+    session.commit()
+
+    ordering = _descending_nulls_last(Conversation.last_message_at)
+    rows = (
+        session.query(Conversation)
+        .filter(Conversation.facebook_page_id == alice_page.id)
+        .order_by(*ordering)
+        .all()
+    )
+
+    assert [conversation.psid for conversation in rows] == [
+        newest.psid,
+        older.psid,
+        no_timestamp.psid,
+    ]
+    statement = select(Conversation.id).order_by(*ordering)
+    mysql_sql = str(statement.compile(dialect=mysql.dialect()))
+    assert "NULLS LAST" not in mysql_sql.upper()
+    assert "IS NULL ASC" in mysql_sql.upper()
+
+
+def test_customer_list_order_search_and_page_scope_remain_unchanged(
+    client: TestClient, session: Session
+) -> None:
+    alice, bob = _get_users(session)
+    alice_page = _make_page(session, alice, "page-customer-regression-alice")
+    bob_page = _make_page(session, bob, "page-customer-regression-bob")
+    _select_page(session, alice, alice_page)
+
+    recent_customer = _make_customer(session, name="Needle Recent")
+    older_customer = _make_customer(session, name="Older Customer")
+    null_customer = _make_customer(session, name="No Timestamp Customer")
+    hidden_customer = _make_customer(session, name="Needle Hidden Other Page")
+
+    recent = _make_conversation(
+        session, alice_page, "psid-regression-recent", customer_id=recent_customer.id
+    )
+    older = _make_conversation(
+        session, alice_page, "psid-regression-older", customer_id=older_customer.id
+    )
+    no_timestamp = _make_conversation(
+        session, alice_page, "psid-regression-null", customer_id=null_customer.id
+    )
+    _make_conversation(
+        session, bob_page, "psid-regression-hidden", customer_id=hidden_customer.id
+    )
+    recent.last_message_at = datetime(2026, 8, 15, 12, 0, tzinfo=UTC)
+    older.last_message_at = datetime(2026, 8, 15, 10, 0, tzinfo=UTC)
+    no_timestamp.created_at = datetime(2026, 8, 14, 10, 0, tzinfo=UTC)
+    session.commit()
+
+    response = client.get("/api/v1/facebook/customers", headers=_auth(alice))
+    assert response.status_code == 200
+    assert [item["uuid"] for item in response.json()["items"]] == [
+        str(recent_customer.public_id),
+        str(older_customer.public_id),
+        str(null_customer.public_id),
+    ]
+
+    search_response = client.get(
+        "/api/v1/facebook/customers",
+        headers=_auth(alice),
+        params={"q": "  needle  "},
+    )
+    assert search_response.status_code == 200
+    assert [item["uuid"] for item in search_response.json()["items"]] == [
+        str(recent_customer.public_id)
+    ]
 
 
 def test_customer_profile_by_customer_uuid_merges_all_conversations_and_history(
