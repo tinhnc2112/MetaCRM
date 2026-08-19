@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from app.db.base import Base
 from app.models.base import utc_now
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -19,6 +21,13 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+if TYPE_CHECKING:
+    from app.models.auth import User
+    from app.models.customer_core import Customer
+    from app.models.facebook import FacebookPage
+    from app.models.messenger import Conversation
+    from app.models.products import Product
 
 
 class Order(Base):
@@ -71,11 +80,11 @@ class Order(Base):
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    page: Mapped["FacebookPage"] = relationship()
-    customer: Mapped["Customer"] = relationship()
-    conversation: Mapped["Conversation | None"] = relationship()
-    creator: Mapped["User | None"] = relationship()
-    items: Mapped[list["OrderItem"]] = relationship(
+    page: Mapped[FacebookPage] = relationship()
+    customer: Mapped[Customer] = relationship()
+    conversation: Mapped[Conversation | None] = relationship()
+    creator: Mapped[User | None] = relationship()
+    items: Mapped[list[OrderItem]] = relationship(
         back_populates="order",
         cascade="all, delete-orphan",
         lazy="selectin",
@@ -107,4 +116,37 @@ class OrderItem(Base):
     )
 
     order: Mapped[Order] = relationship(back_populates="items")
-    product: Mapped["Product | None"] = relationship(back_populates="order_items", lazy="joined")
+    product: Mapped[Product | None] = relationship(back_populates="order_items", lazy="joined")
+
+
+class OrderEvent(Base):
+    """Append-only record of an actual Order business transition."""
+
+    __tablename__ = "order_events"
+    __table_args__ = (
+        UniqueConstraint("public_id", name="uq_order_events_public_id"),
+        CheckConstraint(
+            "event_type IN ('ORDER_CREATED', 'ORDER_CONFIRMED', 'ORDER_CANCELLED', "
+            "'PAYMENT_STATUS_CHANGED', 'SHIPPING_STATUS_CHANGED')",
+            name="ck_order_events_type",
+        ),
+        Index("ix_order_events_order_created", "order_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[UUID] = mapped_column(nullable=False, default=uuid4)
+    order_id: Mapped[int] = mapped_column(
+        ForeignKey("orders.id", ondelete="RESTRICT"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    from_value: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    to_value: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+    order: Mapped[Order] = relationship()
+    created_by: Mapped[User | None] = relationship()

@@ -306,6 +306,9 @@ export function CustomerProfilePanel({
         queryClient.invalidateQueries({ queryKey: ["customer-orders", input.pageId, input.customerUuid] }),
         queryClient.invalidateQueries({ queryKey: ["customer-order-summary", input.pageId, input.customerUuid] }),
         queryClient.invalidateQueries({ queryKey: ["order-detail", input.pageId, input.orderUuid] }),
+        queryClient.invalidateQueries({
+          queryKey: ["order-timeline", input.pageId, input.orderUuid]
+        }),
         queryClient.invalidateQueries({ queryKey: ["orders", input.pageId] }),
         queryClient.invalidateQueries({ queryKey: ["order-operational-summary", input.pageId] }),
         queryClient.invalidateQueries({ queryKey: ["product-picker", input.pageId] }),

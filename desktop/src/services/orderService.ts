@@ -7,6 +7,7 @@ import type {
   OrderOperationalSummary,
   OrderResponse,
   OrderStatus,
+  OrderTimelineResponse,
   OrderUpdatePayload
 } from "../types/order";
 
@@ -55,6 +56,13 @@ export async function listCustomerOrders(
 
 export async function getOrder(orderUuid: string): Promise<OrderResponse> {
   const response = await apiClient.get<OrderResponse>(`/api/v1/facebook/orders/${encodeURIComponent(orderUuid)}`);
+  return response.data;
+}
+
+export async function getOrderTimeline(orderUuid: string): Promise<OrderTimelineResponse> {
+  const response = await apiClient.get<OrderTimelineResponse>(
+    `/api/v1/facebook/orders/${encodeURIComponent(orderUuid)}/timeline`
+  );
   return response.data;
 }
 

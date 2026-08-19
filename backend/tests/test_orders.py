@@ -17,13 +17,14 @@ from app.models.customer_core import Customer
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.inventory import ProductInventory, StockMovement
 from app.models.messenger import Conversation
-from app.models.orders import Order, OrderItem
+from app.models.orders import Order, OrderEvent, OrderItem
 from app.models.products import Product
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.inventory import inventory_reconciles
 from app.services.facebook.orders import (
     build_order_create_fingerprint,
     get_order_operational_summary,
+    get_order_timeline,
     list_orders,
 )
 from app.services.facebook.pages import select_current_page
@@ -314,6 +315,7 @@ def test_order_creation_exact_retry_replays_one_draft_and_conflicts_on_change(
     assert first.json()["order_number"] == replay.json()["order_number"]
     assert session.query(Order).count() == 1
     assert session.query(OrderItem).count() == len(payload["items"])
+    assert session.query(OrderEvent).filter_by(event_type="ORDER_CREATED").count() == 1
     stored = session.query(Order).one()
     assert stored.idempotency_key == key
     assert len(stored.request_fingerprint or "") == 64
@@ -490,6 +492,10 @@ def test_confirmed_order_idempotency_replay_consumes_inventory_once(
     assert first.json()["uuid"] == replay.json()["uuid"]
     assert session.query(Order).count() == 1
     assert session.query(StockMovement).filter_by(movement_type="ORDER_OUT").count() == 1
+    assert [
+        event.event_type
+        for event in session.query(OrderEvent).order_by(OrderEvent.id).all()
+    ] == ["ORDER_CREATED", "ORDER_CONFIRMED"]
     inventory = session.query(ProductInventory).filter_by(product_id=product.id).one()
     assert inventory.quantity_on_hand == 7
     assert inventory_reconciles(session, inventory)
@@ -567,6 +573,7 @@ def test_failed_stock_request_does_not_consume_creation_key(
     )
     assert failed.status_code == 409
     assert session.query(Order).count() == 0
+    assert session.query(OrderEvent).count() == 0
 
     adjusted = client.post(
         f"/api/v1/facebook/products/{product.public_id}/inventory/adjustments",
@@ -1914,6 +1921,7 @@ def test_insufficient_direct_confirm_rolls_back_order_and_all_patch_fields(
     assert stored.note == "Original"
     assert session.query(ProductInventory).one().quantity_on_hand == 2
     assert session.query(StockMovement).filter_by(movement_type="ORDER_OUT").count() == 0
+    assert [event.event_type for event in session.query(OrderEvent).all()] == ["ORDER_CREATED"]
 
 
 def test_confirmation_validates_all_products_before_any_stock_mutation(
@@ -2257,6 +2265,10 @@ def test_customer_merge_after_confirm_is_inventory_neutral(
     ).json()
     movement = session.query(StockMovement).filter_by(movement_type="ORDER_OUT").one()
     movement_identity = (movement.public_id, movement.order_id, movement.order_item_id)
+    event_identities = [
+        (event.public_id, event.event_type)
+        for event in session.query(OrderEvent).order_by(OrderEvent.id).all()
+    ]
 
     merged = client.post(
         f"/api/v1/facebook/customers/{primary_conversation.uuid}/merge",
@@ -2270,6 +2282,23 @@ def test_customer_merge_after_confirm_is_inventory_neutral(
     assert order.customer_id == primary.id
     assert session.query(ProductInventory).one().quantity_on_hand == 7
     assert (movement.public_id, movement.order_id, movement.order_item_id) == movement_identity
+    assert [
+        (event.public_id, event.event_type)
+        for event in session.query(OrderEvent).order_by(OrderEvent.id).all()
+    ] == event_identities
+    timeline = client.get(
+        f"/api/v1/facebook/orders/{created['uuid']}/timeline", headers=_auth(alice)
+    )
+    assert timeline.status_code == 200
+    timeline_event_types = [
+        item["event_type"]
+        for item in timeline.json()["items"]
+        if item["kind"] == "order_event"
+    ]
+    assert timeline_event_types == [
+        "ORDER_CREATED",
+        "ORDER_CONFIRMED",
+    ]
     assert session.query(StockMovement).count() == 2  # OPENING + ORDER_OUT
 
 
@@ -2305,3 +2334,225 @@ def test_cancellation_with_missing_balance_fails_without_changing_order(
     order = session.query(Order).filter(Order.public_id == UUID(created["uuid"])).one()
     assert order.status == "confirmed"
     assert session.query(StockMovement).filter_by(movement_type="ORDER_CANCEL_RESTORE").count() == 0
+    assert session.query(OrderEvent).filter_by(event_type="ORDER_CANCELLED").count() == 0
+
+
+def test_order_events_capture_real_transitions_and_suppress_same_state_retries(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-events-transitions")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "events-transitions")
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [{"item_name": "Manual event item", "quantity": 1, "unit_price": 4}],
+        },
+    ).json()
+
+    multi = {"status": "confirmed", "payment_status": "partial", "shipping_status": "packed"}
+    assert client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}", headers=_auth(alice), json=multi
+    ).status_code == 200
+    event_count = session.query(OrderEvent).count()
+    assert client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}", headers=_auth(alice), json=multi
+    ).status_code == 200
+    assert session.query(OrderEvent).count() == event_count
+
+    for payment_status in ("paid", "paid", "refunded"):
+        assert client.patch(
+            f"/api/v1/facebook/orders/{created['uuid']}",
+            headers=_auth(alice),
+            json={"payment_status": payment_status},
+        ).status_code == 200
+    for shipping_status in ("shipped", "delivered", "cancelled", "cancelled"):
+        assert client.patch(
+            f"/api/v1/facebook/orders/{created['uuid']}",
+            headers=_auth(alice),
+            json={"shipping_status": shipping_status},
+        ).status_code == 200
+    assert client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "cancelled"},
+    ).status_code == 200
+    final_count = session.query(OrderEvent).count()
+    assert client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "cancelled"},
+    ).status_code == 200
+    assert session.query(OrderEvent).count() == final_count
+
+    events = session.query(OrderEvent).order_by(OrderEvent.id).all()
+    assert [event.event_type for event in events] == [
+        "ORDER_CREATED",
+        "ORDER_CONFIRMED",
+        "PAYMENT_STATUS_CHANGED",
+        "SHIPPING_STATUS_CHANGED",
+        "PAYMENT_STATUS_CHANGED",
+        "PAYMENT_STATUS_CHANGED",
+        "SHIPPING_STATUS_CHANGED",
+        "SHIPPING_STATUS_CHANGED",
+        "SHIPPING_STATUS_CHANGED",
+        "ORDER_CANCELLED",
+    ]
+    assert [
+        (event.from_value, event.to_value)
+        for event in events
+        if event.event_type == "PAYMENT_STATUS_CHANGED"
+    ] == [("unpaid", "partial"), ("partial", "paid"), ("paid", "refunded")]
+    assert [
+        (event.from_value, event.to_value)
+        for event in events
+        if event.event_type == "SHIPPING_STATUS_CHANGED"
+    ] == [
+        ("pending", "packed"),
+        ("packed", "shipped"),
+        ("shipped", "delivered"),
+        ("delivered", "cancelled"),
+    ]
+    assert session.query(StockMovement).filter(StockMovement.order_id.is_not(None)).count() == 0
+
+
+def test_order_timeline_combines_events_and_inventory_using_order_item_snapshots(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-timeline-inventory")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "timeline-inventory")
+    product = _make_product(session, page, name="Timeline Original")
+    _enable_inventory(client, alice, product, 8)
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "status": "confirmed",
+            "items": [{"product_uuid": str(product.public_id), "quantity": 2}],
+        },
+    ).json()
+
+    product.name = "Timeline Renamed"
+    product.sku = "RENAMED-SKU"
+    session.commit()
+    initial = client.get(
+        f"/api/v1/facebook/orders/{created['uuid']}/timeline", headers=_auth(alice)
+    )
+    assert initial.status_code == 200
+    initial_items = initial.json()["items"]
+    initial_types = [
+        (item["kind"], item.get("event_type") or item.get("movement_type"))
+        for item in initial_items
+    ]
+    assert initial_types == [
+        ("order_event", "ORDER_CREATED"),
+        ("order_event", "ORDER_CONFIRMED"),
+        ("inventory_movement", "ORDER_OUT"),
+    ]
+    movement = initial_items[2]
+    assert movement["product_name"] == "Timeline Original"
+    assert movement["sku"] == "SKU-Timeline Original"
+    assert movement["quantity_delta"] == -2
+    assert movement["quantity_before"] == 8
+    assert movement["quantity_after"] == 6
+    assert movement["actor"] == {
+        "name": "Alice Orders",
+        "email": "alice_orders@example.com",
+    }
+    assert "order_id" not in movement
+    assert "order_item_id" not in movement
+    assert all(item.get("movement_type") != "OPENING" for item in initial_items)
+
+    assert client.patch(
+        f"/api/v1/facebook/orders/{created['uuid']}",
+        headers=_auth(alice),
+        json={"status": "cancelled"},
+    ).status_code == 200
+    final_items = client.get(
+        f"/api/v1/facebook/orders/{created['uuid']}/timeline", headers=_auth(alice)
+    ).json()["items"]
+    final_types = [
+        (item["kind"], item.get("event_type") or item.get("movement_type"))
+        for item in final_items[-2:]
+    ]
+    assert final_types == [
+        ("order_event", "ORDER_CANCELLED"),
+        ("inventory_movement", "ORDER_CANCEL_RESTORE"),
+    ]
+    assert final_items[-1]["product_name"] == "Timeline Original"
+    assert final_items[-1]["quantity_delta"] == 2
+
+
+def test_order_timeline_is_page_scoped_and_supports_historical_empty_history(
+    client: TestClient, session: Session
+) -> None:
+    alice, bob = _get_users(session)
+    alice_page = _make_page(session, alice, "page-order-timeline-a")
+    bob_page = _make_page(session, bob, "page-order-timeline-b")
+    _select_page(session, alice, alice_page)
+    customer = _order_customer(session, alice_page, "timeline-historical")
+    historical = Order(
+        facebook_page_id=alice_page.id,
+        customer_id=customer.id,
+        order_number="ORD-HISTORICAL-NO-EVENTS",
+        status="confirmed",
+        payment_status="paid",
+        shipping_status="delivered",
+        created_by_id=alice.id,
+    )
+    session.add(historical)
+    session.commit()
+
+    response = client.get(
+        f"/api/v1/facebook/orders/{historical.public_id}/timeline", headers=_auth(alice)
+    )
+    assert response.status_code == 200
+    assert response.json() == {"items": []}
+
+    _select_page(session, bob, bob_page)
+    foreign = client.get(
+        f"/api/v1/facebook/orders/{historical.public_id}/timeline", headers=_auth(bob)
+    )
+    assert foreign.status_code == 404
+    assert client.get(
+        "/api/v1/facebook/orders/not-a-uuid/timeline", headers=_auth(bob)
+    ).status_code == 404
+
+
+def test_order_timeline_has_constant_query_count(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-timeline-query-count")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "timeline-query-count")
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [{"item_name": "Timeline count", "quantity": 1, "unit_price": 1}],
+        },
+    ).json()
+
+    statement_count = 0
+
+    def count_statement(*_args: object, **_kwargs: object) -> None:
+        nonlocal statement_count
+        statement_count += 1
+
+    bind = session.get_bind()
+    event.listen(bind, "before_cursor_execute", count_statement)
+    try:
+        timeline = get_order_timeline(session, alice, created["uuid"])
+    finally:
+        event.remove(bind, "before_cursor_execute", count_statement)
+
+    assert timeline is not None
+    assert statement_count == 5

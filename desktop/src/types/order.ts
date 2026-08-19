@@ -108,6 +108,47 @@ export type OrderListFilters = {
 
 export type OrderOperationalSummary = Record<OrderQueueSelection, number>;
 
+export type OrderTimelineActor = {
+  name: string | null;
+  email: string | null;
+};
+
+export type OrderEventType =
+  | "ORDER_CREATED"
+  | "ORDER_CONFIRMED"
+  | "ORDER_CANCELLED"
+  | "PAYMENT_STATUS_CHANGED"
+  | "SHIPPING_STATUS_CHANGED";
+
+export type OrderEventTimelineItem = {
+  kind: "order_event";
+  public_id: string;
+  event_type: OrderEventType;
+  from_value: string | null;
+  to_value: string | null;
+  actor: OrderTimelineActor | null;
+  created_at: string;
+};
+
+export type InventoryMovementTimelineItem = {
+  kind: "inventory_movement";
+  public_id: string;
+  movement_type: "ORDER_OUT" | "ORDER_CANCEL_RESTORE";
+  product_name: string;
+  sku: string | null;
+  quantity_delta: number;
+  quantity_before: number;
+  quantity_after: number;
+  actor: OrderTimelineActor | null;
+  created_at: string;
+};
+
+export type OrderTimelineItem = OrderEventTimelineItem | InventoryMovementTimelineItem;
+
+export type OrderTimelineResponse = {
+  items: OrderTimelineItem[];
+};
+
 export type CustomerOrderSummary = {
   order_count: number;
   total_spend: string;

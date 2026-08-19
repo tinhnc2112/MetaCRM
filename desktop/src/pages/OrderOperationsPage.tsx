@@ -15,6 +15,7 @@ import { getCurrentFacebookPage } from "../services/facebookService";
 import {
   getOrder,
   getOrderOperationalSummary,
+  getOrderTimeline,
   listOrders,
   updateOrder
 } from "../services/orderService";
@@ -104,6 +105,11 @@ export function OrderOperationsPage() {
     queryFn: () => getOrder(selectedOrderUuid as string),
     enabled: Boolean(currentPageId && selectedOrderUuid)
   });
+  const timelineQuery = useQuery({
+    queryKey: ["order-timeline", currentPageId, selectedOrderUuid],
+    queryFn: () => getOrderTimeline(selectedOrderUuid as string),
+    enabled: Boolean(currentPageId && selectedOrderUuid)
+  });
 
   const updateMutation = useMutation({
     mutationFn: ({ orderUuid, payload }: UpdateVariables) => updateOrder(orderUuid, payload),
@@ -114,6 +120,9 @@ export function OrderOperationsPage() {
           queryKey: ["order-operational-summary", variables.pageId]
         }),
         queryClient.invalidateQueries({ queryKey: ["order", variables.pageId, variables.orderUuid] }),
+        queryClient.invalidateQueries({
+          queryKey: ["order-timeline", variables.pageId, variables.orderUuid]
+        }),
         queryClient.invalidateQueries({ queryKey: ["customer-orders", variables.pageId, variables.customerUuid] }),
         queryClient.invalidateQueries({ queryKey: ["customer-order-summary", variables.pageId, variables.customerUuid] })
       ];
@@ -138,6 +147,9 @@ export function OrderOperationsPage() {
             queryKey: ["order-operational-summary", variables.pageId]
           }),
           queryClient.invalidateQueries({ queryKey: ["order", variables.pageId, variables.orderUuid] }),
+          queryClient.invalidateQueries({
+            queryKey: ["order-timeline", variables.pageId, variables.orderUuid]
+          }),
           queryClient.invalidateQueries({ queryKey: ["product-picker", variables.pageId] }),
           queryClient.invalidateQueries({ queryKey: ["products", variables.pageId] })
         ]);
@@ -337,9 +349,13 @@ export function OrderOperationsPage() {
         loading={detailQuery.isLoading}
         loadError={detailQuery.isError ? getReadableOrderError(detailQuery.error) : null}
         operationError={operationError}
+        activityItems={timelineQuery.data?.items ?? []}
+        activityLoading={timelineQuery.isLoading}
+        activityError={timelineQuery.isError ? getReadableOrderError(timelineQuery.error) : null}
         updating={updateMutation.isPending}
         onClose={() => { setSelectedOrderUuid(null); setOperationError(null); }}
         onRetry={() => void detailQuery.refetch()}
+        onRetryActivity={() => void timelineQuery.refetch()}
         onOpenCustomer={(customerUuid) => navigate(`/customers/${encodeURIComponent(customerUuid)}`)}
         onUpdate={submitUpdate}
         onLifecycleChange={requestLifecycleChange}

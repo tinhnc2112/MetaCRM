@@ -1211,6 +1211,23 @@ body {
   gap: 3px;
 }
 
+.order-activity-loading {
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+}
+
+.order-activity-timeline {
+  margin-top: 20px;
+}
+
+.order-activity-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-bottom: 8px;
+}
+
 .order-operations-pagination {
   display: flex;
   align-items: center;

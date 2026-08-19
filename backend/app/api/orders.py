@@ -12,17 +12,23 @@ from app.models.auth import User
 from app.schemas.messenger import PaginationMeta
 from app.schemas.orders import (
     CustomerOrderSummaryResponse,
+    InventoryMovementTimelineItem,
     OrderCreate,
+    OrderEventTimelineItem,
     OrderItemResponse,
     OrderListItem,
     OrderListResponse,
     OrderOperationalSummaryResponse,
     OrderResponse,
+    OrderTimelineActor,
+    OrderTimelineResponse,
     OrderUpdate,
 )
 from app.services.facebook.inventory import InsufficientInventoryError, InventoryStateError
 from app.services.facebook.orders import (
     InvalidOrderTransitionError,
+    InventoryMovementTimelineRecord,
+    OrderEventTimelineRecord,
     OrderIdempotencyConflictError,
     OrderOperationalQueue,
     create_order,
@@ -30,6 +36,7 @@ from app.services.facebook.orders import (
     get_customer_orders,
     get_order,
     get_order_operational_summary,
+    get_order_timeline,
     list_orders,
     update_order,
 )
@@ -223,13 +230,67 @@ def get_order_endpoint(
 ) -> OrderResponse:
     try:
         UUID(order_id)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+        ) from exc
 
     order = get_order(session, current_user, order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     return _serialize_order(order)
+
+
+@router.get("/orders/{order_id}/timeline", response_model=OrderTimelineResponse)
+def get_order_timeline_endpoint(
+    order_id: str,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> OrderTimelineResponse:
+    try:
+        UUID(order_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+        ) from exc
+
+    timeline = get_order_timeline(session, current_user, order_id)
+    if timeline is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    items: list[OrderEventTimelineItem | InventoryMovementTimelineItem] = []
+    for item in timeline:
+        actor = (
+            OrderTimelineActor(name=item.actor_name, email=item.actor_email)
+            if item.actor_name or item.actor_email
+            else None
+        )
+        if isinstance(item, OrderEventTimelineRecord):
+            items.append(
+                OrderEventTimelineItem(
+                    public_id=str(item.public_id),
+                    event_type=item.event_type,
+                    from_value=item.from_value,
+                    to_value=item.to_value,
+                    actor=actor,
+                    created_at=item.created_at,
+                )
+            )
+        elif isinstance(item, InventoryMovementTimelineRecord):
+            items.append(
+                InventoryMovementTimelineItem(
+                    public_id=str(item.public_id),
+                    movement_type=item.movement_type,
+                    product_name=item.product_name,
+                    sku=item.sku,
+                    quantity_delta=item.quantity_delta,
+                    quantity_before=item.quantity_before,
+                    quantity_after=item.quantity_after,
+                    actor=actor,
+                    created_at=item.created_at,
+                )
+            )
+    return OrderTimelineResponse(items=items)
 
 
 @router.post("/orders", response_model=OrderResponse)

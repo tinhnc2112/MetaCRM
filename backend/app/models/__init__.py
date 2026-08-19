@@ -16,7 +16,7 @@ from app.models.customers import (
 from app.models.facebook import FacebookAccount, FacebookOAuthState, FacebookPage, UserPageContext
 from app.models.inventory import ProductInventory, StockMovement
 from app.models.messenger import Conversation, Message
-from app.models.orders import Order, OrderItem
+from app.models.orders import Order, OrderEvent, OrderItem
 from app.models.products import Product
 
 __all__ = [
@@ -39,6 +39,7 @@ __all__ = [
     "Message",
     "ProductInventory",
     "Order",
+    "OrderEvent",
     "OrderItem",
     "Product",
     "Role",

@@ -13,8 +13,9 @@ from uuid import UUID, uuid4
 
 from app.models.auth import User
 from app.models.customer_core import Customer
+from app.models.inventory import StockMovement
 from app.models.messenger import Conversation
-from app.models.orders import Order, OrderItem
+from app.models.orders import Order, OrderEvent, OrderItem
 from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.conversations import PaginatedResult, get_conversation_for_user
 from app.services.facebook.inventory import consume_order_inventory, restore_order_inventory
@@ -52,6 +53,14 @@ class OrderOperationalQueue(StrEnum):
     IN_TRANSIT = "in_transit"
     SHIPPING_ISSUE = "shipping_issue"
     CANCELLED = "cancelled"
+
+
+class OrderEventType(StrEnum):
+    ORDER_CREATED = "ORDER_CREATED"
+    ORDER_CONFIRMED = "ORDER_CONFIRMED"
+    ORDER_CANCELLED = "ORDER_CANCELLED"
+    PAYMENT_STATUS_CHANGED = "PAYMENT_STATUS_CHANGED"
+    SHIPPING_STATUS_CHANGED = "SHIPPING_STATUS_CHANGED"
 
 
 IDEMPOTENCY_CONFLICT_MESSAGE = (
@@ -93,6 +102,36 @@ class OrderOperationalSummary:
     in_transit: int
     shipping_issue: int
     cancelled: int
+
+
+@dataclass(frozen=True)
+class OrderEventTimelineRecord:
+    public_id: UUID
+    event_type: str
+    from_value: str | None
+    to_value: str | None
+    actor_name: str | None
+    actor_email: str | None
+    created_at: datetime
+    sort_id: int
+
+
+@dataclass(frozen=True)
+class InventoryMovementTimelineRecord:
+    public_id: UUID
+    movement_type: str
+    product_name: str
+    sku: str | None
+    quantity_delta: int
+    quantity_before: int
+    quantity_after: int
+    actor_name: str | None
+    actor_email: str | None
+    created_at: datetime
+    sort_id: int
+
+
+OrderTimelineRecord = OrderEventTimelineRecord | InventoryMovementTimelineRecord
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -265,7 +304,12 @@ def _resolve_customer_for_page(session: Session, user: User, customer_uuid: str)
 
 
 def _resolve_order_for_page(
-    session: Session, user: User, order_uuid: str, *, lock: bool = False
+    session: Session,
+    user: User,
+    order_uuid: str,
+    *,
+    lock: bool = False,
+    load_items: bool = True,
 ) -> Order | None:
     page = _current_page(session, user)
     if page is None:
@@ -283,6 +327,8 @@ def _resolve_order_for_page(
             _order_conversation_is_page_consistent(page.id),
         )
     )
+    if not load_items:
+        query = query.options(noload(Order.items))
     if lock:
         query = query.with_for_update()
     return query.first()
@@ -308,6 +354,16 @@ def _apply_order_status_transition(
         )
     if next_status == current_status:
         return
+    _add_order_event(
+        session,
+        user,
+        order,
+        OrderEventType.ORDER_CONFIRMED
+        if next_status == "confirmed"
+        else OrderEventType.ORDER_CANCELLED,
+        from_value=current_status,
+        to_value=next_status,
+    )
     if next_status == "confirmed":
         consume_order_inventory(session, user, order)
     elif next_status == "cancelled" and current_status == "confirmed":
@@ -315,6 +371,28 @@ def _apply_order_status_transition(
     order.status = next_status
     if next_status == "cancelled" and order.cancelled_at is None:
         order.cancelled_at = datetime.now(UTC)
+
+
+def _add_order_event(
+    session: Session,
+    user: User,
+    order: Order,
+    event_type: OrderEventType,
+    *,
+    from_value: str | None = None,
+    to_value: str | None = None,
+) -> None:
+    session.add(
+        OrderEvent(
+            public_id=uuid4(),
+            order_id=order.id,
+            event_type=event_type.value,
+            from_value=from_value,
+            to_value=to_value,
+            created_by_id=user.id,
+            created_at=datetime.now(UTC),
+        )
+    )
 
 
 def calculate_order_totals(
@@ -708,6 +786,7 @@ def _create_order_impl(
     session.add_all(order_items)
     order.items = order_items
     session.flush()
+    _add_order_event(session, user, order, OrderEventType.ORDER_CREATED)
     _apply_order_status_transition(session, user, order, requested_status)
     session.commit()
     session.refresh(order)
@@ -803,13 +882,33 @@ def _update_order_impl(
         next_status = _validate_status(str(data["status"]), ORDER_STATUSES, "status")
         _apply_order_status_transition(session, user, order, next_status)
     if "payment_status" in data and data["payment_status"] is not None:
-        order.payment_status = _validate_status(
+        next_payment_status = _validate_status(
             str(data["payment_status"]), PAYMENT_STATUSES, "payment_status"
         )
+        if next_payment_status != order.payment_status:
+            _add_order_event(
+                session,
+                user,
+                order,
+                OrderEventType.PAYMENT_STATUS_CHANGED,
+                from_value=order.payment_status,
+                to_value=next_payment_status,
+            )
+            order.payment_status = next_payment_status
     if "shipping_status" in data and data["shipping_status"] is not None:
-        order.shipping_status = _validate_status(
+        next_shipping_status = _validate_status(
             str(data["shipping_status"]), SHIPPING_STATUSES, "shipping_status"
         )
+        if next_shipping_status != order.shipping_status:
+            _add_order_event(
+                session,
+                user,
+                order,
+                OrderEventType.SHIPPING_STATUS_CHANGED,
+                from_value=order.shipping_status,
+                to_value=next_shipping_status,
+            )
+            order.shipping_status = next_shipping_status
     if "currency" in data and data["currency"] is not None:
         currency = str(data["currency"]).strip().upper()
         if not currency:
@@ -857,6 +956,78 @@ def update_order(
     except Exception:
         session.rollback()
         raise
+
+
+def get_order_timeline(
+    session: Session,
+    user: User,
+    order_uuid: str,
+) -> list[OrderTimelineRecord] | None:
+    """Return authoritative Order events and linked inventory movements chronologically."""
+    order = _resolve_order_for_page(session, user, order_uuid, load_items=False)
+    if order is None:
+        return None
+
+    event_rows = (
+        session.query(OrderEvent, User.full_name, User.email)
+        .outerjoin(User, OrderEvent.created_by_id == User.id)
+        .filter(OrderEvent.order_id == order.id)
+        .all()
+    )
+    movement_rows = (
+        session.query(
+            StockMovement,
+            OrderItem.item_name,
+            OrderItem.sku,
+            User.full_name,
+            User.email,
+        )
+        .join(OrderItem, StockMovement.order_item_id == OrderItem.id)
+        .outerjoin(User, StockMovement.created_by_id == User.id)
+        .filter(
+            StockMovement.order_id == order.id,
+            StockMovement.movement_type.in_(("ORDER_OUT", "ORDER_CANCEL_RESTORE")),
+        )
+        .all()
+    )
+
+    timeline: list[OrderTimelineRecord] = [
+        OrderEventTimelineRecord(
+            public_id=event.public_id,
+            event_type=event.event_type,
+            from_value=event.from_value,
+            to_value=event.to_value,
+            actor_name=actor_name,
+            actor_email=actor_email,
+            created_at=event.created_at,
+            sort_id=event.id,
+        )
+        for event, actor_name, actor_email in event_rows
+    ]
+    timeline.extend(
+        InventoryMovementTimelineRecord(
+            public_id=movement.public_id,
+            movement_type=movement.movement_type,
+            product_name=product_name,
+            sku=sku,
+            quantity_delta=movement.quantity_delta,
+            quantity_before=movement.quantity_before,
+            quantity_after=movement.quantity_after,
+            actor_name=actor_name,
+            actor_email=actor_email,
+            created_at=movement.created_at,
+            sort_id=movement.id,
+        )
+        for movement, product_name, sku, actor_name, actor_email in movement_rows
+    )
+    timeline.sort(
+        key=lambda item: (
+            _utc(item.created_at),
+            0 if isinstance(item, OrderEventTimelineRecord) else 1,
+            item.sort_id,
+        )
+    )
+    return timeline
 
 
 def get_customer_orders(

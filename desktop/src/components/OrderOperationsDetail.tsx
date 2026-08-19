@@ -1,9 +1,11 @@
 import { Alert, Button, Descriptions, Divider, Empty, List, Modal, Select, Space, Spin, Tag, Typography } from "antd";
 import { useEffect, useState } from "react";
 
+import { OrderActivityTimeline } from "./OrderActivityTimeline";
 import type {
   OrderResponse,
   OrderStatus,
+  OrderTimelineItem,
   OrderUpdatePayload,
   PaymentStatus,
   ShippingStatus
@@ -30,9 +32,13 @@ type OrderOperationsDetailProps = {
   loading: boolean;
   loadError: string | null;
   operationError: string | null;
+  activityItems: OrderTimelineItem[];
+  activityLoading: boolean;
+  activityError: string | null;
   updating: boolean;
   onClose: () => void;
   onRetry: () => void;
+  onRetryActivity: () => void;
   onOpenCustomer: (customerUuid: string) => void;
   onUpdate: (payload: OrderUpdatePayload) => void;
   onLifecycleChange: (status: OrderStatus) => void;
@@ -44,9 +50,13 @@ export function OrderOperationsDetail({
   loading,
   loadError,
   operationError,
+  activityItems,
+  activityLoading,
+  activityError,
   updating,
   onClose,
   onRetry,
+  onRetryActivity,
   onOpenCustomer,
   onUpdate,
   onLifecycleChange
@@ -75,6 +85,7 @@ export function OrderOperationsDetail({
       footer={<Button onClick={onClose}>Close</Button>}
       onCancel={onClose}
       destroyOnClose
+      styles={{ body: { maxHeight: "75vh", overflowY: "auto" } }}
     >
       {loading ? (
         <div className="order-detail-loading"><Spin /></div>
@@ -191,6 +202,18 @@ export function OrderOperationsDetail({
                 </Space>
               </List.Item>
             )}
+          />
+
+          <Divider />
+          <Typography.Title level={5}>Activity</Typography.Title>
+          <Typography.Paragraph type="secondary">
+            Recorded Order actions and directly linked Inventory movements, shown chronologically.
+          </Typography.Paragraph>
+          <OrderActivityTimeline
+            items={activityItems}
+            loading={activityLoading}
+            error={activityError}
+            onRetry={onRetryActivity}
           />
         </div>
       )}

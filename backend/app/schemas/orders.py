@@ -9,7 +9,6 @@ from typing import Literal
 from app.schemas.messenger import PaginationMeta
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
 OrderStatus = Literal["draft", "confirmed", "cancelled"]
 PaymentStatus = Literal["unpaid", "partial", "paid", "refunded"]
 ShippingStatus = Literal["pending", "packed", "shipped", "delivered", "cancelled"]
@@ -124,6 +123,44 @@ class OrderOperationalSummaryResponse(BaseModel):
     in_transit: int
     shipping_issue: int
     cancelled: int
+
+
+class OrderTimelineActor(BaseModel):
+    name: str | None = None
+    email: str | None = None
+
+
+class OrderEventTimelineItem(BaseModel):
+    kind: Literal["order_event"] = "order_event"
+    public_id: str
+    event_type: Literal[
+        "ORDER_CREATED",
+        "ORDER_CONFIRMED",
+        "ORDER_CANCELLED",
+        "PAYMENT_STATUS_CHANGED",
+        "SHIPPING_STATUS_CHANGED",
+    ]
+    from_value: str | None = None
+    to_value: str | None = None
+    actor: OrderTimelineActor | None = None
+    created_at: datetime
+
+
+class InventoryMovementTimelineItem(BaseModel):
+    kind: Literal["inventory_movement"] = "inventory_movement"
+    public_id: str
+    movement_type: Literal["ORDER_OUT", "ORDER_CANCEL_RESTORE"]
+    product_name: str
+    sku: str | None = None
+    quantity_delta: int
+    quantity_before: int
+    quantity_after: int
+    actor: OrderTimelineActor | None = None
+    created_at: datetime
+
+
+class OrderTimelineResponse(BaseModel):
+    items: list[OrderEventTimelineItem | InventoryMovementTimelineItem]
 
 
 class CustomerOrderSummaryResponse(BaseModel):
