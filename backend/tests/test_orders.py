@@ -21,7 +21,11 @@ from app.models.orders import Order, OrderItem
 from app.models.products import Product
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.inventory import inventory_reconciles
-from app.services.facebook.orders import build_order_create_fingerprint, list_orders
+from app.services.facebook.orders import (
+    build_order_create_fingerprint,
+    get_order_operational_summary,
+    list_orders,
+)
 from app.services.facebook.pages import select_current_page
 from app.utils.jwt import create_access_token
 from app.utils.password import hash_password
@@ -232,6 +236,56 @@ def _order_customer(db: Session, page: FacebookPage, suffix: str) -> Customer:
 
 def _idempotency_headers(user: User, key: str) -> dict[str, str]:
     return {**_auth(user), "Idempotency-Key": key}
+
+
+def _seed_operational_queue_orders(
+    session: Session,
+    page: FacebookPage,
+    user: User,
+    customer: Customer,
+) -> dict[str, str]:
+    definitions = [
+        ("draft", "draft", "unpaid", "pending"),
+        ("unpaid-pending", "confirmed", "unpaid", "pending"),
+        ("partial-pending", "confirmed", "partial", "pending"),
+        ("paid-pending", "confirmed", "paid", "pending"),
+        ("paid-packed", "confirmed", "paid", "packed"),
+        ("unpaid-packed", "confirmed", "unpaid", "packed"),
+        ("paid-shipped", "confirmed", "paid", "shipped"),
+        ("refunded-shipped", "confirmed", "refunded", "shipped"),
+        ("paid-delivered", "confirmed", "paid", "delivered"),
+        ("shipping-cancelled", "confirmed", "paid", "cancelled"),
+        ("order-cancelled", "cancelled", "unpaid", "pending"),
+    ]
+    result: dict[str, str] = {}
+    now = datetime.now(UTC)
+    for index, (label, order_status, payment_status, shipping_status) in enumerate(definitions):
+        order = Order(
+            facebook_page_id=page.id,
+            customer_id=customer.id,
+            order_number=f"ORD-QUEUE-{label.upper()}",
+            status=order_status,
+            payment_status=payment_status,
+            shipping_status=shipping_status,
+            customer_name_snapshot=customer.name,
+            created_by_id=user.id,
+            created_at=now + timedelta(seconds=index),
+            cancelled_at=now + timedelta(seconds=index) if order_status == "cancelled" else None,
+        )
+        session.add(order)
+        session.flush()
+        session.add(
+            OrderItem(
+                order_id=order.id,
+                item_name=f"Queue item {label}",
+                quantity=1,
+                unit_price=Decimal("1"),
+                line_total=Decimal("1"),
+            )
+        )
+        result[label] = str(order.public_id)
+    session.commit()
+    return result
 
 
 def test_order_creation_exact_retry_replays_one_draft_and_conflicts_on_change(
@@ -1043,6 +1097,168 @@ def test_order_workspace_filters_search_and_page_scope(
     assert len(by_customer.json()["items"]) == 1
 
 
+def test_operational_queue_semantics_filters_pagination_and_page_scope(
+    client: TestClient,
+    session: Session,
+) -> None:
+    alice, bob = _get_users(session)
+    page = _make_page(session, alice, "page-operational-queues")
+    other_page = _make_page(session, bob, "page-operational-queues-other")
+    customer = _make_customer(session, name="Operational Queue Buyer")
+    other_customer = _make_customer(session, name="Foreign Queue Buyer")
+    _make_conversation(session, page, psid="psid-operational-queues", customer_id=customer.id)
+    _make_conversation(
+        session,
+        other_page,
+        psid="psid-operational-queues-other",
+        customer_id=other_customer.id,
+    )
+    _select_page(session, alice, page)
+    orders = _seed_operational_queue_orders(session, page, alice, customer)
+    _select_page(session, bob, other_page)
+    foreign = _seed_operational_queue_orders(session, other_page, bob, other_customer)
+    _select_page(session, alice, page)
+
+    expected = {
+        "draft": {orders["draft"]},
+        "needs_payment": {
+            orders["unpaid-pending"],
+            orders["partial-pending"],
+            orders["unpaid-packed"],
+        },
+        "needs_packing": {
+            orders["unpaid-pending"],
+            orders["partial-pending"],
+            orders["paid-pending"],
+        },
+        "packed": {orders["paid-packed"], orders["unpaid-packed"]},
+        "in_transit": {orders["paid-shipped"], orders["refunded-shipped"]},
+        "shipping_issue": {orders["shipping-cancelled"]},
+        "cancelled": {orders["order-cancelled"]},
+    }
+    for queue, expected_uuids in expected.items():
+        response = client.get(f"/api/v1/facebook/orders?queue={queue}", headers=_auth(alice))
+        assert response.status_code == 200
+        assert response.json()["meta"]["total"] == len(expected_uuids)
+        assert {item["uuid"] for item in response.json()["items"]} == expected_uuids
+        assert not set(foreign.values()).intersection(expected_uuids)
+
+    searched = client.get(
+        "/api/v1/facebook/orders?queue=needs_payment&q=UNPAID-PACKED",
+        headers=_auth(alice),
+    )
+    assert searched.status_code == 200
+    assert [item["uuid"] for item in searched.json()["items"]] == [orders["unpaid-packed"]]
+
+    combined = client.get(
+        "/api/v1/facebook/orders?queue=needs_payment&shipping_status=packed",
+        headers=_auth(alice),
+    )
+    assert combined.status_code == 200
+    assert [item["uuid"] for item in combined.json()["items"]] == [orders["unpaid-packed"]]
+
+    contradictory = client.get(
+        "/api/v1/facebook/orders?queue=packed&shipping_status=pending",
+        headers=_auth(alice),
+    )
+    assert contradictory.status_code == 200
+    assert contradictory.json()["meta"]["total"] == 0
+
+    paginated = client.get(
+        "/api/v1/facebook/orders?queue=needs_packing&page=2&page_size=2",
+        headers=_auth(alice),
+    )
+    assert paginated.status_code == 200
+    assert paginated.json()["meta"]["total"] == 3
+    assert len(paginated.json()["items"]) == 1
+
+    invalid = client.get("/api/v1/facebook/orders?queue=unknown", headers=_auth(alice))
+    assert invalid.status_code == 422
+
+
+def test_operational_summary_counts_overlap_and_follow_lifecycle(
+    client: TestClient,
+    session: Session,
+) -> None:
+    alice, bob = _get_users(session)
+    page = _make_page(session, alice, "page-operational-summary")
+    other_page = _make_page(session, bob, "page-operational-summary-other")
+    customer = _make_customer(session, name="Operational Summary Buyer")
+    other_customer = _make_customer(session, name="Foreign Summary Buyer")
+    _make_conversation(session, page, psid="psid-operational-summary", customer_id=customer.id)
+    _make_conversation(
+        session,
+        other_page,
+        psid="psid-operational-summary-other",
+        customer_id=other_customer.id,
+    )
+    _select_page(session, alice, page)
+    _seed_operational_queue_orders(session, page, alice, customer)
+    _select_page(session, bob, other_page)
+    _seed_operational_queue_orders(session, other_page, bob, other_customer)
+    _select_page(session, alice, page)
+
+    response = client.get("/api/v1/facebook/orders/operational-summary", headers=_auth(alice))
+    assert response.status_code == 200
+    assert response.json() == {
+        "all": 11,
+        "draft": 1,
+        "needs_payment": 3,
+        "needs_packing": 3,
+        "packed": 2,
+        "in_transit": 2,
+        "shipping_issue": 1,
+        "cancelled": 1,
+    }
+
+    transition = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json={
+            "customer_uuid": str(customer.public_id),
+            "items": [{"item_name": "Transition item", "quantity": 1, "unit_price": 1}],
+        },
+    )
+    assert transition.status_code == 200
+    order_uuid = transition.json()["uuid"]
+
+    after_create = client.get(
+        "/api/v1/facebook/orders/operational-summary", headers=_auth(alice)
+    ).json()
+    assert after_create["all"] == 12
+    assert after_create["draft"] == 2
+
+    for payload, entered, left in [
+        ({"status": "confirmed"}, ("needs_payment", "needs_packing"), ("draft",)),
+        (
+            {"payment_status": "paid", "shipping_status": "packed"},
+            ("packed",),
+            ("needs_payment", "needs_packing"),
+        ),
+        ({"shipping_status": "shipped"}, ("in_transit",), ("packed",)),
+        ({"shipping_status": "cancelled"}, ("shipping_issue",), ("in_transit",)),
+        ({"status": "cancelled"}, ("cancelled",), ("shipping_issue",)),
+    ]:
+        before = client.get(
+            "/api/v1/facebook/orders/operational-summary", headers=_auth(alice)
+        ).json()
+        updated = client.patch(
+            f"/api/v1/facebook/orders/{order_uuid}",
+            headers=_auth(alice),
+            json=payload,
+        )
+        assert updated.status_code == 200
+        after = client.get(
+            "/api/v1/facebook/orders/operational-summary", headers=_auth(alice)
+        ).json()
+        for queue in entered:
+            assert after[queue] == before[queue] + 1
+        for queue in left:
+            assert after[queue] == before[queue] - 1
+
+    assert session.query(StockMovement).count() == 0
+
+
 def test_order_workspace_list_has_constant_query_count(session: Session) -> None:
     alice, _ = _get_users(session)
     page = _make_page(session, alice, "page-order-workspace-query-count")
@@ -1093,9 +1309,20 @@ def test_order_workspace_list_has_constant_query_count(session: Session) -> None
         assert all(record.customer_name == "Query Count Buyer" for record in result.items)
     finally:
         event.remove(session.get_bind(), "before_cursor_execute", capture_statement)
-        audit_session.close()
 
     assert len(statements) == 4
+
+    statements.clear()
+    event.listen(session.get_bind(), "before_cursor_execute", capture_statement)
+    try:
+        summary = get_order_operational_summary(audit_session, audit_user)
+        assert summary is not None
+        assert summary.all == 3
+    finally:
+        event.remove(session.get_bind(), "before_cursor_execute", capture_statement)
+        audit_session.close()
+
+    assert len(statements) == 3
 
 
 def test_customer_order_summary_is_page_scoped_and_excludes_cancelled_spend(

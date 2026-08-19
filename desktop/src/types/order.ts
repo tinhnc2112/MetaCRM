@@ -3,6 +3,15 @@ import type { PaginationMeta } from "./messenger";
 export type OrderStatus = "draft" | "confirmed" | "cancelled";
 export type PaymentStatus = "unpaid" | "partial" | "paid" | "refunded";
 export type ShippingStatus = "pending" | "packed" | "shipped" | "delivered" | "cancelled";
+export type OrderOperationalQueue =
+  | "draft"
+  | "needs_payment"
+  | "needs_packing"
+  | "packed"
+  | "in_transit"
+  | "shipping_issue"
+  | "cancelled";
+export type OrderQueueSelection = "all" | OrderOperationalQueue;
 
 export type OrderItem = {
   uuid: string;
@@ -91,10 +100,13 @@ export type OrderListFilters = {
   page?: number;
   pageSize?: number;
   search?: string;
+  queue?: OrderOperationalQueue;
   orderStatus?: OrderStatus;
   paymentStatus?: PaymentStatus;
   shippingStatus?: ShippingStatus;
 };
+
+export type OrderOperationalSummary = Record<OrderQueueSelection, number>;
 
 export type CustomerOrderSummary = {
   order_count: number;

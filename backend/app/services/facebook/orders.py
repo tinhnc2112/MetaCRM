@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from enum import Enum
+from enum import Enum, StrEnum
 from uuid import UUID, uuid4
 
 from app.models.auth import User
@@ -20,7 +20,7 @@ from app.services.facebook.conversations import PaginatedResult, get_conversatio
 from app.services.facebook.inventory import consume_order_inventory, restore_order_inventory
 from app.services.facebook.pages import get_current_page
 from app.services.facebook.products import resolve_product_for_order_item
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, noload
 
@@ -42,6 +42,16 @@ class InvalidOrderTransitionError(ValueError):
 
 class OrderIdempotencyConflictError(ValueError):
     """Raised when an Order creation key is reused for a different request."""
+
+
+class OrderOperationalQueue(StrEnum):
+    DRAFT = "draft"
+    NEEDS_PAYMENT = "needs_payment"
+    NEEDS_PACKING = "needs_packing"
+    PACKED = "packed"
+    IN_TRANSIT = "in_transit"
+    SHIPPING_ISSUE = "shipping_issue"
+    CANCELLED = "cancelled"
 
 
 IDEMPOTENCY_CONFLICT_MESSAGE = (
@@ -71,6 +81,18 @@ class OrderListRecord:
     customer_uuid: UUID
     customer_name: str | None
     conversation_uuid: UUID | None
+
+
+@dataclass(frozen=True)
+class OrderOperationalSummary:
+    all: int
+    draft: int
+    needs_payment: int
+    needs_packing: int
+    packed: int
+    in_transit: int
+    shipping_issue: int
+    cancelled: int
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -379,6 +401,34 @@ def generate_order_number(_page_id: str, order_uuid: UUID) -> str:
     return f"ORD-{today}-{order_uuid.hex[:12].upper()}"
 
 
+def build_order_operational_queue_predicate(queue: OrderOperationalQueue):
+    predicates = {
+        OrderOperationalQueue.DRAFT: Order.status == "draft",
+        OrderOperationalQueue.NEEDS_PAYMENT: and_(
+            Order.status == "confirmed",
+            Order.payment_status.in_(("unpaid", "partial")),
+        ),
+        OrderOperationalQueue.NEEDS_PACKING: and_(
+            Order.status == "confirmed",
+            Order.shipping_status == "pending",
+        ),
+        OrderOperationalQueue.PACKED: and_(
+            Order.status == "confirmed",
+            Order.shipping_status == "packed",
+        ),
+        OrderOperationalQueue.IN_TRANSIT: and_(
+            Order.status == "confirmed",
+            Order.shipping_status == "shipped",
+        ),
+        OrderOperationalQueue.SHIPPING_ISSUE: and_(
+            Order.status == "confirmed",
+            Order.shipping_status == "cancelled",
+        ),
+        OrderOperationalQueue.CANCELLED: Order.status == "cancelled",
+    }
+    return predicates[queue]
+
+
 def list_orders(
     session: Session,
     user: User,
@@ -386,6 +436,7 @@ def list_orders(
     page: int = 1,
     page_size: int = 20,
     customer_id: int | None = None,
+    queue: OrderOperationalQueue | None = None,
     status: str | None = None,
     payment_status: str | None = None,
     shipping_status: str | None = None,
@@ -410,6 +461,8 @@ def list_orders(
     )
     if customer_id is not None:
         query = query.filter(Order.customer_id == customer_id)
+    if queue is not None:
+        query = query.filter(build_order_operational_queue_predicate(queue))
     if status:
         query = query.filter(Order.status == _validate_status(status, ORDER_STATUSES, "status"))
     if payment_status:
@@ -443,6 +496,11 @@ def list_orders(
         .correlate(Order)
         .scalar_subquery()
     )
+    ordering = (
+        (Order.cancelled_at.desc(), Order.id.desc())
+        if queue == OrderOperationalQueue.CANCELLED
+        else (Order.created_at.desc(), Order.id.desc())
+    )
     rows = (
         query.options(noload(Order.items), noload(Order.customer), noload(Order.conversation))
         .add_columns(
@@ -451,7 +509,7 @@ def list_orders(
             Customer.name.label("customer_name"),
             Conversation.uuid.label("conversation_uuid"),
         )
-        .order_by(Order.created_at.desc(), Order.id.desc())
+        .order_by(*ordering)
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
@@ -467,6 +525,43 @@ def list_orders(
         for order, count, customer_uuid, customer_name, conversation_uuid in rows
     ]
     return PaginatedResult(items=items, total=total, page=page, page_size=page_size)
+
+
+def get_order_operational_summary(
+    session: Session,
+    user: User,
+) -> OrderOperationalSummary | None:
+    page_obj = _current_page(session, user)
+    if page_obj is None:
+        return None
+
+    queue_predicates = {
+        queue: build_order_operational_queue_predicate(queue)
+        for queue in OrderOperationalQueue
+    }
+    row = (
+        session.query(
+            func.count(Order.id),
+            *[
+                func.coalesce(func.sum(case((predicate, 1), else_=0)), 0)
+                for predicate in queue_predicates.values()
+            ],
+        )
+        .filter(
+            Order.facebook_page_id == page_obj.id,
+            Order.deleted_at.is_(None),
+            _order_conversation_is_page_consistent(page_obj.id),
+        )
+        .one()
+    )
+    counts = [int(value or 0) for value in row]
+    return OrderOperationalSummary(
+        all=counts[0],
+        **{
+            queue.value: counts[index]
+            for index, queue in enumerate(queue_predicates, start=1)
+        },
+    )
 
 
 def get_order(session: Session, user: User, order_uuid: str) -> Order | None:
@@ -771,6 +866,7 @@ def get_customer_orders(
     *,
     page: int = 1,
     page_size: int = 20,
+    queue: OrderOperationalQueue | None = None,
     status: str | None = None,
     payment_status: str | None = None,
     shipping_status: str | None = None,
@@ -786,6 +882,7 @@ def get_customer_orders(
         page=page,
         page_size=page_size,
         customer_id=customer.id,
+        queue=queue,
         status=status,
         payment_status=payment_status,
         shipping_status=shipping_status,

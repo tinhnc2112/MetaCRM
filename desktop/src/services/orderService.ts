@@ -4,6 +4,7 @@ import type {
   OrderCreatePayload,
   OrderListFilters,
   OrderListResponse,
+  OrderOperationalSummary,
   OrderResponse,
   OrderStatus,
   OrderUpdatePayload
@@ -15,11 +16,19 @@ export async function listOrders(input?: OrderListFilters): Promise<OrderListRes
       page: input?.page,
       page_size: input?.pageSize,
       q: input?.search,
+      queue: input?.queue,
       status: input?.orderStatus,
       payment_status: input?.paymentStatus,
       shipping_status: input?.shippingStatus
     }
   });
+  return response.data;
+}
+
+export async function getOrderOperationalSummary(): Promise<OrderOperationalSummary> {
+  const response = await apiClient.get<OrderOperationalSummary>(
+    "/api/v1/facebook/orders/operational-summary"
+  );
   return response.data;
 }
 

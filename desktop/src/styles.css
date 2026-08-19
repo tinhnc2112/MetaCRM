@@ -1153,6 +1153,32 @@ body {
   background: #ffffff;
 }
 
+.order-queue-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.order-queue-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.order-queue-heading h5 {
+  margin: 0 0 2px;
+}
+
+.order-queue-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .order-operations-toolbar {
   display: grid;
   grid-template-columns: minmax(320px, 1fr) repeat(3, minmax(150px, 190px));

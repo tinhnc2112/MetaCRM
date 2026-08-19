@@ -264,7 +264,9 @@ export function CustomerProfilePanel({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["customer-orders", input.pageId, input.customerUuid] }),
         queryClient.invalidateQueries({ queryKey: ["customer-order-summary", input.pageId, input.customerUuid] }),
-        queryClient.invalidateQueries({ queryKey: ["order-detail", input.pageId] })
+        queryClient.invalidateQueries({ queryKey: ["order-detail", input.pageId] }),
+        queryClient.invalidateQueries({ queryKey: ["orders", input.pageId] }),
+        queryClient.invalidateQueries({ queryKey: ["order-operational-summary", input.pageId] })
       ]);
       if (createOrderContextRef.current !== input.contextKey) {
         return;
@@ -304,6 +306,8 @@ export function CustomerProfilePanel({
         queryClient.invalidateQueries({ queryKey: ["customer-orders", input.pageId, input.customerUuid] }),
         queryClient.invalidateQueries({ queryKey: ["customer-order-summary", input.pageId, input.customerUuid] }),
         queryClient.invalidateQueries({ queryKey: ["order-detail", input.pageId, input.orderUuid] }),
+        queryClient.invalidateQueries({ queryKey: ["orders", input.pageId] }),
+        queryClient.invalidateQueries({ queryKey: ["order-operational-summary", input.pageId] }),
         queryClient.invalidateQueries({ queryKey: ["product-picker", input.pageId] }),
         queryClient.invalidateQueries({ queryKey: ["products", input.pageId] })
       ]);

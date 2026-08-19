@@ -16,6 +16,7 @@ from app.schemas.orders import (
     OrderItemResponse,
     OrderListItem,
     OrderListResponse,
+    OrderOperationalSummaryResponse,
     OrderResponse,
     OrderUpdate,
 )
@@ -23,10 +24,12 @@ from app.services.facebook.inventory import InsufficientInventoryError, Inventor
 from app.services.facebook.orders import (
     InvalidOrderTransitionError,
     OrderIdempotencyConflictError,
+    OrderOperationalQueue,
     create_order,
     get_customer_order_summary,
     get_customer_orders,
     get_order,
+    get_order_operational_summary,
     list_orders,
     update_order,
 )
@@ -141,6 +144,7 @@ def list_orders_endpoint(
     current_user: Annotated[User, Depends(require_active_user)],
     session: Annotated[Session, Depends(get_db_session)],
     customer_uuid: str | None = Query(default=None),
+    queue: Annotated[OrderOperationalQueue | None, Query()] = None,
     status_filter: str | None = Query(default=None, alias="status"),
     payment_status: str | None = Query(default=None),
     shipping_status: str | None = Query(default=None),
@@ -157,6 +161,7 @@ def list_orders_endpoint(
                 customer_uuid,
                 page=page,
                 page_size=page_size,
+                queue=queue,
                 status=status_filter,
                 payment_status=payment_status,
                 shipping_status=shipping_status,
@@ -170,6 +175,7 @@ def list_orders_endpoint(
                 current_user,
                 page=page,
                 page_size=page_size,
+                queue=queue,
                 status=status_filter,
                 payment_status=payment_status,
                 shipping_status=shipping_status,
@@ -193,6 +199,20 @@ def list_orders_endpoint(
             has_prev=result.has_prev,
         ),
     )
+
+
+@router.get("/orders/operational-summary", response_model=OrderOperationalSummaryResponse)
+def order_operational_summary_endpoint(
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> OrderOperationalSummaryResponse:
+    summary = get_order_operational_summary(session, current_user)
+    if summary is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Facebook page is not selected",
+        )
+    return OrderOperationalSummaryResponse(**summary.__dict__)
 
 
 @router.get("/orders/{order_id}", response_model=OrderResponse)
@@ -290,6 +310,7 @@ def customer_order_history_endpoint(
     customer_uuid: str,
     current_user: Annotated[User, Depends(require_active_user)],
     session: Annotated[Session, Depends(get_db_session)],
+    queue: Annotated[OrderOperationalQueue | None, Query()] = None,
     status_filter: str | None = Query(default=None, alias="status"),
     payment_status: str | None = Query(default=None),
     shipping_status: str | None = Query(default=None),
@@ -307,6 +328,7 @@ def customer_order_history_endpoint(
             customer_uuid,
             page=page,
             page_size=page_size,
+            queue=queue,
             status=status_filter,
             payment_status=payment_status,
             shipping_status=shipping_status,

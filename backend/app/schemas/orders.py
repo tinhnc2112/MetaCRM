@@ -115,6 +115,17 @@ class OrderListResponse(BaseModel):
     meta: PaginationMeta
 
 
+class OrderOperationalSummaryResponse(BaseModel):
+    all: int
+    draft: int
+    needs_payment: int
+    needs_packing: int
+    packed: int
+    in_transit: int
+    shipping_issue: int
+    cancelled: int
+
+
 class CustomerOrderSummaryResponse(BaseModel):
     order_count: int
     total_spend: str

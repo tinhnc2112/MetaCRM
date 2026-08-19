@@ -12,9 +12,16 @@ import {
   ShippingStatusBadge
 } from "../components/OrderOperationsDetail";
 import { getCurrentFacebookPage } from "../services/facebookService";
-import { getOrder, listOrders, updateOrder } from "../services/orderService";
+import {
+  getOrder,
+  getOrderOperationalSummary,
+  listOrders,
+  updateOrder
+} from "../services/orderService";
 import type {
   OrderListItem,
+  OrderOperationalSummary,
+  OrderQueueSelection,
   OrderStatus,
   OrderUpdatePayload,
   PaymentStatus,
@@ -43,6 +50,7 @@ export function OrderOperationsPage() {
   const [orderStatus, setOrderStatus] = useState<OrderFilter>("all");
   const [paymentStatus, setPaymentStatus] = useState<PaymentFilter>("all");
   const [shippingStatus, setShippingStatus] = useState<ShippingFilter>("all");
+  const [queue, setQueue] = useState<OrderQueueSelection>("all");
   const [page, setPage] = useState(1);
   const [selectedOrderUuid, setSelectedOrderUuid] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
@@ -67,6 +75,7 @@ export function OrderOperationsPage() {
 
   useEffect(() => {
     setPage(1);
+    setQueue("all");
     setSelectedOrderUuid(null);
     setOperationError(null);
   }, [currentPageId]);
@@ -75,6 +84,7 @@ export function OrderOperationsPage() {
     page,
     pageSize: PAGE_SIZE,
     search: search || undefined,
+    queue: queue === "all" ? undefined : queue,
     orderStatus: orderStatus === "all" ? undefined : orderStatus,
     paymentStatus: paymentStatus === "all" ? undefined : paymentStatus,
     shippingStatus: shippingStatus === "all" ? undefined : shippingStatus
@@ -82,6 +92,11 @@ export function OrderOperationsPage() {
   const ordersQuery = useQuery({
     queryKey: ["orders", currentPageId, filters],
     queryFn: () => listOrders(filters),
+    enabled: Boolean(currentPageId)
+  });
+  const operationalSummaryQuery = useQuery({
+    queryKey: ["order-operational-summary", currentPageId],
+    queryFn: getOrderOperationalSummary,
     enabled: Boolean(currentPageId)
   });
   const detailQuery = useQuery({
@@ -95,6 +110,9 @@ export function OrderOperationsPage() {
     onSuccess: async (_, variables) => {
       const invalidations = [
         queryClient.invalidateQueries({ queryKey: ["orders", variables.pageId] }),
+        queryClient.invalidateQueries({
+          queryKey: ["order-operational-summary", variables.pageId]
+        }),
         queryClient.invalidateQueries({ queryKey: ["order", variables.pageId, variables.orderUuid] }),
         queryClient.invalidateQueries({ queryKey: ["customer-orders", variables.pageId, variables.customerUuid] }),
         queryClient.invalidateQueries({ queryKey: ["customer-order-summary", variables.pageId, variables.customerUuid] })
@@ -115,6 +133,10 @@ export function OrderOperationsPage() {
     onError: async (error, variables) => {
       if (getHttpStatus(error) === 409) {
         await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["orders", variables.pageId] }),
+          queryClient.invalidateQueries({
+            queryKey: ["order-operational-summary", variables.pageId]
+          }),
           queryClient.invalidateQueries({ queryKey: ["order", variables.pageId, variables.orderUuid] }),
           queryClient.invalidateQueries({ queryKey: ["product-picker", variables.pageId] }),
           queryClient.invalidateQueries({ queryKey: ["products", variables.pageId] })
@@ -162,6 +184,16 @@ export function OrderOperationsPage() {
 
   const orders = ordersQuery.data?.items ?? [];
   const pagination = ordersQuery.data?.meta ?? null;
+  const operationalSummary: OrderOperationalSummary | null =
+    operationalSummaryQuery.data ?? null;
+  const hasActiveFilters = Boolean(
+    search ||
+      searchText ||
+      queue !== "all" ||
+      orderStatus !== "all" ||
+      paymentStatus !== "all" ||
+      shippingStatus !== "all"
+  );
   const columns: TableColumnsType<OrderListItem> = [
     {
       title: "Order",
@@ -197,6 +229,16 @@ export function OrderOperationsPage() {
     setSelectedOrderUuid(orderUuid);
   }
 
+  function clearFilters() {
+    setSearchText("");
+    setSearch("");
+    setQueue("all");
+    setOrderStatus("all");
+    setPaymentStatus("all");
+    setShippingStatus("all");
+    setPage(1);
+  }
+
   if (currentPageQuery.isLoading) {
     return <div className="order-page-loading"><Spin /></div>;
   }
@@ -221,6 +263,42 @@ export function OrderOperationsPage() {
       </div>
 
       <section className="order-operations-section">
+        <div className="order-queue-section">
+          <div className="order-queue-heading">
+            <div>
+              <Typography.Title level={5}>Operational queues</Typography.Title>
+              <Typography.Text type="secondary">
+                Queue presets are derived views and may overlap.
+              </Typography.Text>
+            </div>
+            {hasActiveFilters ? <Button onClick={clearFilters}>Clear filters</Button> : null}
+          </div>
+          <div className="order-queue-bar" role="group" aria-label="Operational Order queues">
+            {queueOptions.map((option) => (
+              <Button
+                key={option.value}
+                type={queue === option.value ? "primary" : "default"}
+                danger={option.value === "shipping_issue" && queue === option.value}
+                aria-pressed={queue === option.value}
+                onClick={() => {
+                  setQueue(option.value);
+                  setPage(1);
+                }}
+              >
+                {option.label}
+                {operationalSummary ? ` (${operationalSummary[option.value]})` : ""}
+              </Button>
+            ))}
+          </div>
+          {operationalSummaryQuery.isError ? (
+            <Alert
+              type="warning"
+              showIcon
+              message="Queue counts are unavailable."
+              action={<Button onClick={() => void operationalSummaryQuery.refetch()}>Retry</Button>}
+            />
+          ) : null}
+        </div>
         <div className="order-operations-toolbar">
           <Input
             allowClear
@@ -239,7 +317,7 @@ export function OrderOperationsPage() {
         ) : ordersQuery.isError ? (
           <Alert type="error" showIcon message="Unable to load Orders." description={getReadableOrderError(ordersQuery.error)} action={<Button onClick={() => void ordersQuery.refetch()}>Retry</Button>} />
         ) : orders.length === 0 ? (
-          <Empty description={search || orderStatus !== "all" || paymentStatus !== "all" || shippingStatus !== "all" ? "No orders match the current filters." : "No orders"} />
+          <Empty description={hasActiveFilters ? "No orders match the current filters." : "No orders"} />
         ) : (
           <>
             <Table<OrderListItem> rowKey="uuid" columns={columns} dataSource={orders} pagination={false} loading={ordersQuery.isFetching} scroll={{ x: 1370 }} />
@@ -272,6 +350,16 @@ export function OrderOperationsPage() {
 
 const orderFilterOptions: Array<{ label: string; value: OrderFilter }> = [
   { label: "All Orders", value: "all" }, { label: "Draft", value: "draft" }, { label: "Confirmed", value: "confirmed" }, { label: "Cancelled", value: "cancelled" }
+];
+const queueOptions: Array<{ label: string; value: OrderQueueSelection }> = [
+  { label: "All", value: "all" },
+  { label: "Drafts", value: "draft" },
+  { label: "Needs payment", value: "needs_payment" },
+  { label: "Needs packing", value: "needs_packing" },
+  { label: "Packed", value: "packed" },
+  { label: "In transit", value: "in_transit" },
+  { label: "Shipping issue", value: "shipping_issue" },
+  { label: "Cancelled", value: "cancelled" }
 ];
 const paymentFilterOptions: Array<{ label: string; value: PaymentFilter }> = [
   { label: "All payments", value: "all" }, { label: "Unpaid", value: "unpaid" }, { label: "Partial", value: "partial" }, { label: "Paid", value: "paid" }, { label: "Refunded", value: "refunded" }
