@@ -334,6 +334,64 @@ def test_order_creation_exact_retry_replays_one_draft_and_conflicts_on_change(
     assert session.query(OrderItem).count() == len(payload["items"])
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("status", "cancelled", "status cannot be cancelled when creating an order"),
+        ("shipping_status", "packed", "shipping_status must be pending when creating an order"),
+    ],
+)
+def test_order_creation_rejects_impossible_initial_fulfillment_state(
+    client: TestClient,
+    session: Session,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, f"page-order-invalid-initial-{field}")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, f"invalid-initial-{field}")
+    payload = {**_order_payload(str(customer.public_id)), field: value}
+
+    response = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert message in str(response.json()["detail"])
+    assert session.query(Order).count() == 0
+
+
+def test_generic_order_patch_rejects_shipping_address_without_mutating_destination(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-order-generic-shipping-patch")
+    _select_page(session, alice, page)
+    customer = _order_customer(session, page, "generic-shipping-patch")
+    created = client.post(
+        "/api/v1/facebook/orders",
+        headers=_auth(alice),
+        json=_order_payload(str(customer.public_id)),
+    )
+    assert created.status_code == 200
+    order_uuid = created.json()["uuid"]
+
+    response = client.patch(
+        f"/api/v1/facebook/orders/{order_uuid}",
+        headers=_auth(alice),
+        json={"shipping_address": "Mutated outside structured endpoint"},
+    )
+
+    assert response.status_code == 422
+    session.expire_all()
+    order = session.query(Order).filter(Order.public_id == UUID(order_uuid)).one()
+    assert order.shipping_address == "123 Test Street"
+
+
 def test_order_creation_rejects_malformed_idempotency_key(
     client: TestClient, session: Session
 ) -> None:
@@ -860,12 +918,18 @@ def test_shipping_destination_update_is_page_safe_repeatable_and_stock_neutral(
             "customer_uuid": str(customer.public_id),
             "status": "confirmed",
             "payment_status": "partial",
-            "shipping_status": "packed",
+            "shipping_status": "pending",
             "items": [{"product_uuid": str(product.public_id), "quantity": 2}],
         },
     )
     assert created.status_code == 200
     order_uuid = created.json()["uuid"]
+    packed = client.patch(
+        f"/api/v1/facebook/orders/{order_uuid}",
+        headers=_auth(alice),
+        json={"shipping_status": "packed"},
+    )
+    assert packed.status_code == 200
     update_payload = {
         "recipient_name": "Packed Recipient",
         "recipient_phone": "0912345678",
@@ -1358,11 +1422,17 @@ def test_order_workspace_filters_search_and_page_scope(
             "customer_uuid": str(customer.public_id),
             "status": "confirmed",
             "payment_status": "paid",
-            "shipping_status": "packed",
+            "shipping_status": "pending",
             "items": [{"item_name": "Confirmed item", "quantity": 2, "unit_price": 20}],
         },
     )
     assert draft.status_code == confirmed.status_code == 200
+    confirmed = client.patch(
+        f"/api/v1/facebook/orders/{confirmed.json()['uuid']}",
+        headers=_auth(alice),
+        json={"shipping_status": "packed"},
+    )
+    assert confirmed.status_code == 200
 
     _select_page(session, bob, other_page)
     foreign = client.post(
@@ -1372,9 +1442,15 @@ def test_order_workspace_filters_search_and_page_scope(
             "customer_uuid": str(other_customer.public_id),
             "status": "confirmed",
             "payment_status": "paid",
-            "shipping_status": "packed",
+            "shipping_status": "pending",
             "items": [{"item_name": "Foreign item", "quantity": 1, "unit_price": 99}],
         },
+    )
+    assert foreign.status_code == 200
+    foreign = client.patch(
+        f"/api/v1/facebook/orders/{foreign.json()['uuid']}",
+        headers=_auth(bob),
+        json={"shipping_status": "packed"},
     )
     assert foreign.status_code == 200
     _select_page(session, alice, page)

@@ -305,19 +305,24 @@ export function OrderOperationsPage() {
     });
   };
 
-  const submitShippingUpdate = (payload: ShippingDestinationInput) => {
+  const submitShippingUpdate = async (payload: ShippingDestinationInput): Promise<boolean> => {
     const order = detailQuery.data;
     if (!currentPageId || !selectedOrderUuid || !order || shippingMutation.isPending) {
-      return;
+      return false;
     }
     setOperationError(null);
-    shippingMutation.mutate({
-      pageId: currentPageId,
-      orderUuid: selectedOrderUuid,
-      customerUuid: order.customer_uuid,
-      payload,
-      contextKey: currentContextKey
-    });
+    try {
+      await shippingMutation.mutateAsync({
+        pageId: currentPageId,
+        orderUuid: selectedOrderUuid,
+        customerUuid: order.customer_uuid,
+        payload,
+        contextKey: currentContextKey
+      });
+      return currentContextRef.current === currentContextKey;
+    } catch {
+      return false;
+    }
   };
 
   const requestLifecycleChange = (status: OrderStatus) => {
@@ -369,20 +374,28 @@ export function OrderOperationsPage() {
     });
   };
 
-  const submitShipmentTracking = (shipmentUuid: string, payload: ShipmentTrackingPayload) => {
+  const submitShipmentTracking = async (
+    shipmentUuid: string,
+    payload: ShipmentTrackingPayload
+  ): Promise<boolean> => {
     const order = detailQuery.data;
     if (!currentPageId || !selectedOrderUuid || !order || shipmentTrackingMutation.isPending) {
-      return;
+      return false;
     }
     setOperationError(null);
-    shipmentTrackingMutation.mutate({
-      pageId: currentPageId,
-      orderUuid: selectedOrderUuid,
-      customerUuid: order.customer_uuid,
-      shipmentUuid,
-      payload,
-      contextKey: currentContextKey
-    });
+    try {
+      await shipmentTrackingMutation.mutateAsync({
+        pageId: currentPageId,
+        orderUuid: selectedOrderUuid,
+        customerUuid: order.customer_uuid,
+        shipmentUuid,
+        payload,
+        contextKey: currentContextKey
+      });
+      return currentContextRef.current === currentContextKey;
+    } catch {
+      return false;
+    }
   };
 
   const orders = ordersQuery.data?.items ?? [];
@@ -549,6 +562,7 @@ export function OrderOperationsPage() {
         updating={updateMutation.isPending || shippingMutation.isPending || createShipmentMutation.isPending || shipmentStatusMutation.isPending || shipmentTrackingMutation.isPending}
         onClose={() => { setSelectedOrderUuid(null); setOperationError(null); }}
         onRetry={() => void detailQuery.refetch()}
+        onRetryShipments={() => void shipmentsQuery.refetch()}
         onRetryActivity={() => void timelineQuery.refetch()}
         onOpenCustomer={(customerUuid) => navigate(`/customers/${encodeURIComponent(customerUuid)}`)}
         onUpdate={submitUpdate}

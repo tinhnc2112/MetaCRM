@@ -134,20 +134,25 @@ class OrderCreate(BaseModel):
     note: str | None = Field(default=None, max_length=5000)
 
     @model_validator(mode="after")
-    def reject_ambiguous_shipping_input(self) -> OrderCreate:
+    def validate_initial_fulfillment_state(self) -> OrderCreate:
         if self.shipping_address is not None and self.shipping_destination is not None:
             raise ValueError("Use either shipping_address or shipping_destination, not both")
+        if self.status == "cancelled":
+            raise ValueError("status cannot be cancelled when creating an order")
+        if self.shipping_status != "pending":
+            raise ValueError("shipping_status must be pending when creating an order")
         return self
 
 
 class OrderUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     status: OrderStatus | None = None
     payment_status: PaymentStatus | None = None
     shipping_status: ShippingStatus | None = None
     currency: str | None = Field(default=None, min_length=1, max_length=8)
     discount_amount: Decimal | None = Field(default=None, ge=Decimal("0"), le=MAX_MONEY)
     shipping_fee: Decimal | None = Field(default=None, ge=Decimal("0"), le=MAX_MONEY)
-    shipping_address: str | None = Field(default=None, max_length=5000)
     note: str | None = Field(default=None, max_length=5000)
 
 

@@ -46,14 +46,15 @@ type OrderOperationsDetailProps = {
   updating: boolean;
   onClose: () => void;
   onRetry: () => void;
+  onRetryShipments: () => void;
   onRetryActivity: () => void;
   onOpenCustomer: (customerUuid: string) => void;
   onUpdate: (payload: OrderUpdatePayload) => void;
-  onUpdateShipping: (payload: ShippingDestinationInput) => void;
+  onUpdateShipping: (payload: ShippingDestinationInput) => Promise<boolean>;
   onLifecycleChange: (status: OrderStatus) => void;
   onCreateShipment: () => void;
   onShipmentStatusChange: (shipmentUuid: string, status: ShipmentStatus) => void;
-  onShipmentTrackingUpdate: (shipmentUuid: string, payload: ShipmentTrackingPayload) => void;
+  onShipmentTrackingUpdate: (shipmentUuid: string, payload: ShipmentTrackingPayload) => Promise<boolean>;
 };
 
 export function OrderOperationsDetail({
@@ -71,6 +72,7 @@ export function OrderOperationsDetail({
   updating,
   onClose,
   onRetry,
+  onRetryShipments,
   onRetryActivity,
   onOpenCustomer,
   onUpdate,
@@ -84,7 +86,7 @@ export function OrderOperationsDetail({
   const [shippingStatus, setShippingStatus] = useState<ShippingStatus>("pending");
   const [shippingEditorOpen, setShippingEditorOpen] = useState(false);
   const [shippingDraft, setShippingDraft] = useState(() => emptyShippingDraft());
-  const [trackingEditorShipment, setTrackingEditorShipment] = useState<Shipment | null>(null);
+  const [trackingEditorShipmentUuid, setTrackingEditorShipmentUuid] = useState<string | null>(null);
   const [trackingDraft, setTrackingDraft] = useState(() => emptyTrackingDraft());
 
   useEffect(() => {
@@ -95,19 +97,17 @@ export function OrderOperationsDetail({
     setShippingStatus(order.shipping_status);
     setShippingDraft(buildShippingDraft(order));
     setShippingEditorOpen(false);
-    setTrackingEditorShipment(null);
+    setTrackingEditorShipmentUuid(null);
   }, [order?.uuid, order?.payment_status, order?.shipping_status, order?.updated_at]);
 
   useEffect(() => {
-    if (!trackingEditorShipment) {
-      return;
+    if (
+      trackingEditorShipmentUuid &&
+      !shipments.some((shipment) => shipment.uuid === trackingEditorShipmentUuid)
+    ) {
+      setTrackingEditorShipmentUuid(null);
     }
-    const refreshed = shipments.find((shipment) => shipment.uuid === trackingEditorShipment.uuid);
-    if (refreshed) {
-      setTrackingEditorShipment(refreshed);
-      setTrackingDraft(buildTrackingDraft(refreshed));
-    }
-  }, [shipments, trackingEditorShipment?.uuid]);
+  }, [shipments, trackingEditorShipmentUuid]);
 
   const statusChanged = Boolean(
     order &&
@@ -200,7 +200,7 @@ export function OrderOperationsDetail({
               <Alert
                 type="info"
                 showIcon
-                message="Shipping information is locked after dispatch or cancellation."
+                message="Shipping information is locked while an active Shipment exists, after dispatch, or after cancellation."
               />
             ) : null}
             <Descriptions bordered size="small" column={2}>
@@ -315,7 +315,13 @@ export function OrderOperationsDetail({
               />
             ) : null}
             {shipmentsError ? (
-              <Alert type="warning" showIcon message="Unable to load Shipments." description={shipmentsError} />
+              <Alert
+                type="warning"
+                showIcon
+                message="Unable to load Shipments."
+                description={shipmentsError}
+                action={<Button onClick={onRetryShipments}>Retry</Button>}
+              />
             ) : shipmentsLoading ? (
               <div className="order-detail-loading"><Spin size="small" /></div>
             ) : shipments.length === 0 ? (
@@ -333,7 +339,7 @@ export function OrderOperationsDetail({
                           size="small"
                           disabled={updating}
                           onClick={() => {
-                            setTrackingEditorShipment(shipment);
+                            setTrackingEditorShipmentUuid(shipment.uuid);
                             setTrackingDraft(buildTrackingDraft(shipment));
                           }}
                         >
@@ -421,9 +427,13 @@ export function OrderOperationsDetail({
             title="Edit shipping information"
             open={shippingEditorOpen}
             onCancel={() => setShippingEditorOpen(false)}
-            onOk={() => {
-              onUpdateShipping(shippingDraftPayload(shippingDraft));
-              setShippingEditorOpen(false);
+            onOk={async () => {
+              if (updating) {
+                return;
+              }
+              if (await onUpdateShipping(shippingDraftPayload(shippingDraft))) {
+                setShippingEditorOpen(false);
+              }
             }}
             okText="Save shipping information"
             confirmLoading={updating}
@@ -443,17 +453,20 @@ export function OrderOperationsDetail({
           </Modal>
           <Modal
             title="Edit tracking"
-            open={Boolean(trackingEditorShipment)}
-            onCancel={() => setTrackingEditorShipment(null)}
-            onOk={() => {
-              if (!trackingEditorShipment) {
+            open={Boolean(trackingEditorShipmentUuid)}
+            onCancel={() => setTrackingEditorShipmentUuid(null)}
+            onOk={async () => {
+              if (!trackingEditorShipmentUuid || updating) {
                 return;
               }
-              onShipmentTrackingUpdate(
-                trackingEditorShipment.uuid,
-                trackingDraftPayload(trackingDraft)
-              );
-              setTrackingEditorShipment(null);
+              if (
+                await onShipmentTrackingUpdate(
+                  trackingEditorShipmentUuid,
+                  trackingDraftPayload(trackingDraft)
+                )
+              ) {
+                setTrackingEditorShipmentUuid(null);
+              }
             }}
             okText="Save tracking"
             confirmLoading={updating}
@@ -625,13 +638,14 @@ function ShipmentTrackingSummary({ shipment }: { shipment: Shipment }) {
     rows.push({ label: "Tracking number", value: shipment.tracking_number });
   }
   if (shipment.tracking_url) {
+    const safeTrackingUrl = httpTrackingUrl(shipment.tracking_url);
     rows.push({
       label: "Tracking URL",
-      value: (
-        <Typography.Link href={shipment.tracking_url} target="_blank" rel="noopener noreferrer">
+      value: safeTrackingUrl ? (
+        <Typography.Link href={safeTrackingUrl} target="_blank" rel="noopener noreferrer">
           {shipment.tracking_url}
         </Typography.Link>
-      )
+      ) : shipment.tracking_url
     });
   }
   if (shipment.shipping_fee) {
@@ -655,6 +669,15 @@ function ShipmentTrackingSummary({ shipment }: { shipment: Shipment }) {
       ))}
     </Descriptions>
   );
+}
+
+function httpTrackingUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
 }
 
 function destinationSummary(recipient: Shipment["recipient"]): string {

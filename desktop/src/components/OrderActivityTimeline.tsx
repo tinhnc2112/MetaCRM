@@ -114,7 +114,7 @@ function trackingDetails(details: Record<string, unknown> | null): string {
   const trackingNumber = typeof details?.tracking_number === "string"
     ? details.tracking_number
     : null;
-  return [carrier, trackingNumber].filter(Boolean).join(" Â· ") || "Manual tracking metadata changed";
+  return [carrier, trackingNumber].filter(Boolean).join(" · ") || "Manual tracking metadata changed";
 }
 
 function actorLabel(actor: OrderTimelineItem["actor"]): string {

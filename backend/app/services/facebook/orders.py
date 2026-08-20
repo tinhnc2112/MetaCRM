@@ -1126,14 +1126,6 @@ def _update_order_impl(
         if not currency:
             raise ValueError("currency must not be empty")
         order.currency = currency
-    if "shipping_address" in data:
-        if _shipping_destination_is_locked(order):
-            raise ShippingDestinationLockedError(
-                "Shipping destination cannot be edited after dispatch or cancellation"
-            )
-        order.shipping_address = _normalise_text(data["shipping_address"])  # type: ignore[arg-type]
-        if order.shipping_address is not None and order.shipping_country_code is None:
-            order.shipping_country_code = "VN"
     if "note" in data:
         order.note = _normalise_text(data["note"])  # type: ignore[arg-type]
     if "discount_amount" in data and data["discount_amount"] is not None:
