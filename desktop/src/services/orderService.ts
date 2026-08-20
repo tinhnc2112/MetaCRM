@@ -9,6 +9,9 @@ import type {
   OrderStatus,
   OrderTimelineResponse,
   OrderUpdatePayload,
+  Shipment,
+  ShipmentListResponse,
+  ShipmentStatus,
   ShippingDestinationInput
 } from "../types/order";
 
@@ -99,6 +102,31 @@ export async function updateOrderShippingDestination(
   const response = await apiClient.patch<OrderResponse>(
     `/api/v1/facebook/orders/${encodeURIComponent(orderUuid)}/shipping-address`,
     payload
+  );
+  return response.data;
+}
+
+export async function listOrderShipments(orderUuid: string): Promise<ShipmentListResponse> {
+  const response = await apiClient.get<ShipmentListResponse>(
+    `/api/v1/facebook/orders/${encodeURIComponent(orderUuid)}/shipments`
+  );
+  return response.data;
+}
+
+export async function createOrderShipment(orderUuid: string): Promise<Shipment> {
+  const response = await apiClient.post<Shipment>(
+    `/api/v1/facebook/orders/${encodeURIComponent(orderUuid)}/shipments`
+  );
+  return response.data;
+}
+
+export async function updateShipmentStatus(
+  shipmentUuid: string,
+  status: ShipmentStatus
+): Promise<Shipment> {
+  const response = await apiClient.patch<Shipment>(
+    `/api/v1/facebook/shipments/${encodeURIComponent(shipmentUuid)}/status`,
+    { status }
   );
   return response.data;
 }

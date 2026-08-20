@@ -8,6 +8,8 @@ import type {
   OrderTimelineItem,
   OrderUpdatePayload,
   PaymentStatus,
+  Shipment,
+  ShipmentStatus,
   ShippingDestinationInput,
   ShippingStatus
 } from "../types/order";
@@ -33,6 +35,9 @@ type OrderOperationsDetailProps = {
   loading: boolean;
   loadError: string | null;
   operationError: string | null;
+  shipments: Shipment[];
+  shipmentsLoading: boolean;
+  shipmentsError: string | null;
   activityItems: OrderTimelineItem[];
   activityLoading: boolean;
   activityError: string | null;
@@ -44,6 +49,8 @@ type OrderOperationsDetailProps = {
   onUpdate: (payload: OrderUpdatePayload) => void;
   onUpdateShipping: (payload: ShippingDestinationInput) => void;
   onLifecycleChange: (status: OrderStatus) => void;
+  onCreateShipment: () => void;
+  onShipmentStatusChange: (shipmentUuid: string, status: ShipmentStatus) => void;
 };
 
 export function OrderOperationsDetail({
@@ -52,6 +59,9 @@ export function OrderOperationsDetail({
   loading,
   loadError,
   operationError,
+  shipments,
+  shipmentsLoading,
+  shipmentsError,
   activityItems,
   activityLoading,
   activityError,
@@ -62,7 +72,9 @@ export function OrderOperationsDetail({
   onOpenCustomer,
   onUpdate,
   onUpdateShipping,
-  onLifecycleChange
+  onLifecycleChange,
+  onCreateShipment,
+  onShipmentStatusChange
 }: OrderOperationsDetailProps) {
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>("unpaid");
   const [shippingStatus, setShippingStatus] = useState<ShippingStatus>("pending");
@@ -83,10 +95,16 @@ export function OrderOperationsDetail({
     order &&
       (paymentStatus !== order.payment_status || shippingStatus !== order.shipping_status)
   );
+  const hasShipments = shipments.length > 0;
+  const hasActiveShipments = shipments.some((shipment) => shipment.status !== "cancelled");
   const shippingEditable = Boolean(
     order &&
       order.status !== "cancelled" &&
-      !["shipped", "delivered", "cancelled"].includes(order.shipping_status)
+      !hasActiveShipments &&
+      (hasShipments || !["shipped", "delivered", "cancelled"].includes(order.shipping_status))
+  );
+  const canCreateShipment = Boolean(
+    order?.status === "confirmed" && order.shipping_destination?.is_complete
   );
 
   return (
@@ -232,21 +250,102 @@ export function OrderOperationsDetail({
                 <span>Shipping</span>
                 <Select
                   aria-label="Shipping status"
-                  value={shippingStatus}
-                  options={SHIPPING_OPTIONS}
-                  onChange={setShippingStatus}
-                  disabled={updating}
-                />
-              </label>
+                value={shippingStatus}
+                options={SHIPPING_OPTIONS}
+                onChange={setShippingStatus}
+                disabled={updating || hasShipments}
+              />
+            </label>
               <Button
                 type="primary"
                 disabled={!statusChanged || updating}
                 loading={updating}
-                onClick={() => onUpdate({ payment_status: paymentStatus, shipping_status: shippingStatus })}
+                onClick={() => onUpdate(hasShipments ? { payment_status: paymentStatus } : { payment_status: paymentStatus, shipping_status: shippingStatus })}
               >
                 Save statuses
               </Button>
             </div>
+          </section>
+
+          <Divider />
+          <section aria-label="Shipments">
+            <div className="order-detail-heading">
+              <div>
+                <Typography.Title level={5}>Shipments</Typography.Title>
+                <Typography.Text type="secondary">
+                  Fulfillment status is derived from Shipments after the first Shipment is created.
+                </Typography.Text>
+              </div>
+              <Button
+                type="primary"
+                disabled={!canCreateShipment || updating}
+                loading={updating}
+                onClick={onCreateShipment}
+              >
+                Create Shipment
+              </Button>
+            </div>
+            {!canCreateShipment ? (
+              <Alert
+                type="info"
+                showIcon
+                message={
+                  order.status !== "confirmed"
+                    ? "Order must be confirmed first."
+                    : "Shipping information incomplete."
+                }
+              />
+            ) : null}
+            {shipmentsError ? (
+              <Alert type="warning" showIcon message="Unable to load Shipments." description={shipmentsError} />
+            ) : shipmentsLoading ? (
+              <div className="order-detail-loading"><Spin size="small" /></div>
+            ) : shipments.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No Shipments" />
+            ) : (
+              <List
+                dataSource={shipments}
+                rowKey="uuid"
+                renderItem={(shipment) => (
+                  <List.Item
+                    actions={shipmentActions(shipment).map((action) => (
+                      <Button
+                        key={action.status}
+                        size="small"
+                        danger={action.status === "cancelled"}
+                        disabled={updating}
+                        onClick={() => onShipmentStatusChange(shipment.uuid, action.status)}
+                      >
+                        {action.label}
+                      </Button>
+                    ))}
+                  >
+                    <List.Item.Meta
+                      title={
+                        <Space wrap>
+                          <Typography.Text strong>{shipment.shipment_number}</Typography.Text>
+                          <ShipmentStatusBadge value={shipment.status} />
+                          {shipment.tracking_number ? <Tag>{shipment.tracking_number}</Tag> : null}
+                        </Space>
+                      }
+                      description={
+                        <Space direction="vertical" size={2}>
+                          <Typography.Text>
+                            {shipment.recipient.recipient_name} · {shipment.recipient.recipient_phone}
+                          </Typography.Text>
+                          <Typography.Text type="secondary">
+                            {destinationSummary(shipment.recipient)}
+                          </Typography.Text>
+                          <Typography.Text type="secondary">
+                            Created {formatTimestamp(shipment.created_at)}
+                          </Typography.Text>
+                        </Space>
+                      }
+                    />
+                  </List.Item>
+                )}
+              />
+            )}
           </section>
 
           <Divider />
@@ -372,6 +471,41 @@ export function PaymentStatusBadge({ value }: { value: PaymentStatus }) {
 export function ShippingStatusBadge({ value }: { value: ShippingStatus }) {
   const color = value === "delivered" ? "green" : value === "cancelled" ? "red" : value === "shipped" ? "cyan" : value === "packed" ? "geekblue" : "default";
   return <Tag color={color}>Shipping · {labelize(value)}</Tag>;
+}
+
+function ShipmentStatusBadge({ value }: { value: ShipmentStatus }) {
+  const color = value === "delivered" ? "green" : value === "cancelled" ? "red" : value === "shipped" ? "cyan" : value === "packed" ? "geekblue" : "default";
+  return <Tag color={color}>Shipment · {labelize(value)}</Tag>;
+}
+
+function shipmentActions(shipment: Shipment): Array<{ status: ShipmentStatus; label: string }> {
+  if (shipment.status === "ready") {
+    return [
+      { status: "packed", label: "Mark packed" },
+      { status: "cancelled", label: "Cancel" }
+    ];
+  }
+  if (shipment.status === "packed") {
+    return [
+      { status: "shipped", label: "Mark shipped" },
+      { status: "cancelled", label: "Cancel" }
+    ];
+  }
+  if (shipment.status === "shipped") {
+    return [{ status: "delivered", label: "Mark delivered" }];
+  }
+  return [];
+}
+
+function destinationSummary(recipient: Shipment["recipient"]): string {
+  return [
+    recipient.address_line,
+    recipient.ward,
+    recipient.district,
+    recipient.province,
+    recipient.postal_code,
+    recipient.country_code
+  ].filter(Boolean).join(", ");
 }
 
 function labelize(value: string): string {

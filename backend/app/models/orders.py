@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from app.models.facebook import FacebookPage
     from app.models.messenger import Conversation
     from app.models.products import Product
+    from app.models.shipments import Shipment
 
 
 class Order(Base):
@@ -100,6 +101,9 @@ class Order(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
         order_by="OrderItem.id",
+    )
+    shipments: Mapped[list[Shipment]] = relationship(
+        back_populates="order", lazy="selectin", order_by="Shipment.id"
     )
 
 

@@ -1,6 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 
-import { E2E, expect, test } from "./fixtures";
+import { E2E, expect, selectPage, test } from "./fixtures";
 
 type CreatedOrder = {
   uuid: string;
@@ -112,21 +112,4 @@ async function closeOrderDetail(detail: Locator): Promise<void> {
     .getByRole("button", { name: "Close", exact: true })
     .click();
   await expect(detail).toBeHidden();
-}
-
-async function selectPage(page: Page, pageName: string): Promise<void> {
-  await page.getByRole("menuitem", { name: "Facebook" }).click();
-  const pageRow = page.getByRole("listitem").filter({ hasText: pageName });
-  await expect(pageRow).toBeVisible();
-  if ((await pageRow.getByRole("button", { name: "Current Page" }).count()) > 0) {
-    return;
-  }
-  const switchResponse = page.waitForResponse(
-    (response) =>
-      response.url().includes("/api/v1/facebook/pages/") &&
-      response.url().endsWith("/select") &&
-      response.request().method() === "POST"
-  );
-  await pageRow.getByRole("button", { name: "Select" }).click();
-  expect((await switchResponse).status()).toBe(200);
 }

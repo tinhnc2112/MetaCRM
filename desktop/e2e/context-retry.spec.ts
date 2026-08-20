@@ -1,6 +1,6 @@
 import type { Locator, Page, Request, Route } from "@playwright/test";
 
-import { E2E, expect, test } from "./fixtures";
+import { E2E, expect, selectPage, test } from "./fixtures";
 
 const API_BASE_URL = "http://127.0.0.1:8001";
 const CREATE_ORDER_ROUTE = "**/api/v1/facebook/orders";
@@ -441,26 +441,6 @@ async function confirmOrder(page: Page, detail: Locator): Promise<void> {
 async function selectOption(select: Locator, page: Page, option: string): Promise<void> {
   await select.press("ArrowDown");
   await page.getByTitle(option, { exact: true }).last().click();
-}
-
-async function selectPage(page: Page, name: string): Promise<void> {
-  await page.getByRole("menuitem", { name: "Facebook" }).click();
-  await expect(page.getByRole("heading", { name: "Facebook", level: 2 })).toBeVisible();
-  const row = page.getByRole("listitem").filter({ hasText: name });
-  await expect(row).toBeVisible();
-  if ((await row.getByRole("button", { name: "Current Page" }).count()) > 0) {
-    return;
-  }
-  const responsePromise = page.waitForResponse(
-    (response) =>
-      response.url().includes("/api/v1/facebook/pages/") &&
-      response.url().endsWith("/select") &&
-      response.request().method() === "POST"
-  );
-  await row.getByRole("button", { name: "Select" }).click();
-  expect((await responsePromise).status()).toBe(200);
-  const currentSection = page.getByRole("heading", { name: "Current Page", level: 4 }).locator("..");
-  await expect(currentSection.locator("span.ant-typography")).toHaveText(name);
 }
 
 function isOrderCreate(request: Request): boolean {

@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum, StrEnum
 from uuid import UUID, uuid4
@@ -16,6 +16,7 @@ from app.models.customer_core import Customer
 from app.models.inventory import StockMovement
 from app.models.messenger import Conversation
 from app.models.orders import Order, OrderEvent, OrderItem
+from app.models.shipments import Shipment, ShipmentEvent
 from app.services.customer_identity import resolve_customer_for_conversation
 from app.services.facebook.conversations import PaginatedResult, get_conversation_for_user
 from app.services.facebook.inventory import consume_order_inventory, restore_order_inventory
@@ -150,7 +151,23 @@ class InventoryMovementTimelineRecord:
     sort_id: int
 
 
-OrderTimelineRecord = OrderEventTimelineRecord | InventoryMovementTimelineRecord
+@dataclass(frozen=True)
+class ShipmentEventTimelineRecord:
+    public_id: UUID
+    shipment_uuid: UUID
+    shipment_number: str
+    event_type: str
+    from_value: str | None
+    to_value: str | None
+    actor_name: str | None
+    actor_email: str | None
+    created_at: datetime
+    sort_id: int
+
+
+OrderTimelineRecord = (
+    OrderEventTimelineRecord | InventoryMovementTimelineRecord | ShipmentEventTimelineRecord
+)
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -309,11 +326,23 @@ def _apply_shipping_destination(
 
 
 def _shipping_destination_is_locked(order: Order) -> bool:
-    return order.status == "cancelled" or order.shipping_status in {
+    if order.status == "cancelled" or _has_active_shipments(order):
+        return True
+    if _has_shipments(order):
+        return False
+    return order.shipping_status in {
         "shipped",
         "delivered",
         "cancelled",
     }
+
+
+def _has_shipments(order: Order) -> bool:
+    return any(shipment is not None for shipment in order.shipments)
+
+
+def _has_active_shipments(order: Order) -> bool:
+    return any(shipment.status != "cancelled" for shipment in order.shipments)
 
 
 def normalize_order_idempotency_key(value: str | None) -> str | None:
@@ -487,7 +516,7 @@ def _resolve_order_for_page(
         )
     )
     if not load_items:
-        query = query.options(noload(Order.items))
+        query = query.options(noload(Order.items), noload(Order.shipments))
     if lock:
         query = query.with_for_update()
     return query.first()
@@ -513,6 +542,10 @@ def _apply_order_status_transition(
         )
     if next_status == current_status:
         return
+    if next_status == "cancelled" and _has_active_shipments(order):
+        raise ShippingDestinationLockedError(
+            "Order cannot be cancelled while active Shipments exist"
+        )
     _add_order_event(
         session,
         user,
@@ -739,7 +772,12 @@ def list_orders(
         else (Order.created_at.desc(), Order.id.desc())
     )
     rows = (
-        query.options(noload(Order.items), noload(Order.customer), noload(Order.conversation))
+        query.options(
+            noload(Order.items),
+            noload(Order.customer),
+            noload(Order.conversation),
+            noload(Order.shipments),
+        )
         .add_columns(
             item_count.label("item_count"),
             Customer.public_id.label("customer_uuid"),
@@ -1064,6 +1102,10 @@ def _update_order_impl(
             )
             order.payment_status = next_payment_status
     if "shipping_status" in data and data["shipping_status"] is not None:
+        if _has_shipments(order):
+            raise ShippingDestinationLockedError(
+                "Order shipping_status is derived from Shipments once a Shipment exists"
+            )
         next_shipping_status = _validate_status(
             str(data["shipping_status"]), SHIPPING_STATUSES, "shipping_status"
         )
@@ -1155,7 +1197,14 @@ def update_order_shipping_destination(
         if before == after:
             return order
 
-        order.updated_at = datetime.now(UTC)
+        next_updated_at = datetime.now(UTC)
+        current_updated_at = _utc(order.updated_at)
+        if current_updated_at is not None:
+            next_updated_at = max(
+                next_updated_at,
+                current_updated_at + timedelta(seconds=1),
+            )
+        order.updated_at = next_updated_at
         session.add(order)
         session.commit()
         session.refresh(order)
@@ -1197,6 +1246,19 @@ def get_order_timeline(
         )
         .all()
     )
+    shipment_rows = (
+        session.query(
+            ShipmentEvent,
+            Shipment.public_id,
+            Shipment.shipment_number,
+            User.full_name,
+            User.email,
+        )
+        .join(Shipment, ShipmentEvent.shipment_id == Shipment.id)
+        .outerjoin(User, ShipmentEvent.created_by_id == User.id)
+        .filter(Shipment.order_id == order.id)
+        .all()
+    )
 
     timeline: list[OrderTimelineRecord] = [
         OrderEventTimelineRecord(
@@ -1227,10 +1289,29 @@ def get_order_timeline(
         )
         for movement, product_name, sku, actor_name, actor_email in movement_rows
     )
+    timeline.extend(
+        ShipmentEventTimelineRecord(
+            public_id=event.public_id,
+            shipment_uuid=shipment_uuid,
+            shipment_number=shipment_number,
+            event_type=event.event_type,
+            from_value=event.from_value,
+            to_value=event.to_value,
+            actor_name=actor_name,
+            actor_email=actor_email,
+            created_at=event.created_at,
+            sort_id=event.id,
+        )
+        for event, shipment_uuid, shipment_number, actor_name, actor_email in shipment_rows
+    )
     timeline.sort(
         key=lambda item: (
             _utc(item.created_at),
-            0 if isinstance(item, OrderEventTimelineRecord) else 1,
+            0
+            if isinstance(item, OrderEventTimelineRecord)
+            else 1
+            if isinstance(item, ShipmentEventTimelineRecord)
+            else 2,
             item.sort_id,
         )
     )

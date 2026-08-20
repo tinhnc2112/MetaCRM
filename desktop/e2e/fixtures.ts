@@ -54,4 +54,64 @@ export const test = base.extend<Fixtures>({
   }
 });
 
+export async function selectPage(page: Page, pageName: string): Promise<void> {
+  await page.evaluate(() => {
+    window.history.pushState({}, "", "/settings/facebook");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await expect(page).toHaveURL(/\/settings\/facebook$/);
+  await expect(page.getByRole("heading", { name: "Facebook", level: 2 })).toBeVisible();
+
+  const currentSection = page
+    .locator(".settings-section")
+    .filter({ has: page.getByRole("heading", { name: "Current Page", level: 4 }) });
+  await expect(currentSection).toBeVisible();
+  if ((await currentSection.getByText(pageName, { exact: true }).count()) > 0) {
+    return;
+  }
+
+  const pagesSection = page
+    .locator(".settings-section")
+    .filter({ has: page.getByRole("heading", { name: "Pages", level: 4 }) });
+  await expect(pagesSection).toBeVisible();
+  const pageRow = pagesSection.getByRole("listitem").filter({ hasText: pageName });
+  await expect(pageRow).toBeVisible();
+
+  let state = "pending";
+  await expect
+    .poll(async () => {
+      if ((await currentSection.getByText(pageName, { exact: true }).count()) > 0) {
+        state = "current";
+        return state;
+      }
+      if ((await pageRow.getByRole("button", { name: "Current Page", exact: true }).count()) > 0) {
+        state = "current";
+        return state;
+      }
+      if ((await pageRow.getByRole("button", { name: "Select", exact: true }).count()) > 0) {
+        state = "selectable";
+        return state;
+      }
+      state = "pending";
+      return state;
+    })
+    .toMatch(/^(current|selectable)$/);
+  if (state === "current") {
+    await expect(currentSection.getByText(pageName, { exact: true })).toBeVisible();
+    return;
+  }
+
+  const selectButton = pageRow.getByRole("button", { name: "Select", exact: true });
+  await expect(selectButton).toBeVisible();
+  const switchResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/v1/facebook/pages/") &&
+      response.url().endsWith("/select") &&
+      response.request().method() === "POST"
+  );
+  await selectButton.click();
+  expect((await switchResponse).status()).toBe(200);
+  await expect(currentSection.getByText(pageName, { exact: true })).toBeVisible();
+}
+
 export { expect } from "@playwright/test";

@@ -3,6 +3,7 @@ import type { PaginationMeta } from "./messenger";
 export type OrderStatus = "draft" | "confirmed" | "cancelled";
 export type PaymentStatus = "unpaid" | "partial" | "paid" | "refunded";
 export type ShippingStatus = "pending" | "packed" | "shipped" | "delivered" | "cancelled";
+export type ShipmentStatus = "ready" | "packed" | "shipped" | "delivered" | "cancelled";
 export type OrderOperationalQueue =
   | "draft"
   | "needs_payment"
@@ -67,6 +68,37 @@ export type ShippingDestination = {
   country_code: string;
   note: string | null;
   is_complete: boolean;
+};
+
+export type ShipmentRecipient = {
+  recipient_name: string;
+  recipient_phone: string;
+  address_line: string;
+  ward: string;
+  district: string;
+  province: string;
+  postal_code: string | null;
+  country_code: string;
+  delivery_note: string | null;
+};
+
+export type Shipment = {
+  uuid: string;
+  order_uuid: string;
+  shipment_number: string;
+  status: ShipmentStatus;
+  recipient: ShipmentRecipient;
+  tracking_number: string | null;
+  created_at: string;
+  updated_at: string;
+  packed_at: string | null;
+  shipped_at: string | null;
+  delivered_at: string | null;
+  cancelled_at: string | null;
+};
+
+export type ShipmentListResponse = {
+  items: Shipment[];
 };
 
 export type OrderCreatePayload = {
@@ -170,7 +202,19 @@ export type InventoryMovementTimelineItem = {
   created_at: string;
 };
 
-export type OrderTimelineItem = OrderEventTimelineItem | InventoryMovementTimelineItem;
+export type ShipmentEventTimelineItem = {
+  kind: "shipment_event";
+  public_id: string;
+  shipment_uuid: string;
+  shipment_number: string;
+  event_type: "CREATED" | "PACKED" | "SHIPPED" | "DELIVERED" | "CANCELLED";
+  from_value: string | null;
+  to_value: string | null;
+  actor: OrderTimelineActor | null;
+  created_at: string;
+};
+
+export type OrderTimelineItem = OrderEventTimelineItem | InventoryMovementTimelineItem | ShipmentEventTimelineItem;
 
 export type OrderTimelineResponse = {
   items: OrderTimelineItem[];

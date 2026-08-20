@@ -23,6 +23,7 @@ from app.schemas.orders import (
     OrderTimelineActor,
     OrderTimelineResponse,
     OrderUpdate,
+    ShipmentEventTimelineItem,
     ShippingDestinationInput,
     ShippingDestinationResponse,
 )
@@ -33,6 +34,7 @@ from app.services.facebook.orders import (
     OrderEventTimelineRecord,
     OrderIdempotencyConflictError,
     OrderOperationalQueue,
+    ShipmentEventTimelineRecord,
     ShippingDestinationLockedError,
     create_order,
     get_customer_order_summary,
@@ -282,7 +284,9 @@ def get_order_timeline_endpoint(
     if timeline is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
 
-    items: list[OrderEventTimelineItem | InventoryMovementTimelineItem] = []
+    items: list[
+        OrderEventTimelineItem | InventoryMovementTimelineItem | ShipmentEventTimelineItem
+    ] = []
     for item in timeline:
         actor = (
             OrderTimelineActor(name=item.actor_name, email=item.actor_email)
@@ -310,6 +314,19 @@ def get_order_timeline_endpoint(
                     quantity_delta=item.quantity_delta,
                     quantity_before=item.quantity_before,
                     quantity_after=item.quantity_after,
+                    actor=actor,
+                    created_at=item.created_at,
+                )
+            )
+        elif isinstance(item, ShipmentEventTimelineRecord):
+            items.append(
+                ShipmentEventTimelineItem(
+                    public_id=str(item.public_id),
+                    shipment_uuid=str(item.shipment_uuid),
+                    shipment_number=item.shipment_number,
+                    event_type=item.event_type,
+                    from_value=item.from_value,
+                    to_value=item.to_value,
                     actor=actor,
                     created_at=item.created_at,
                 )

@@ -18,6 +18,7 @@ from app.models.inventory import ProductInventory, StockMovement
 from app.models.messenger import Conversation, Message
 from app.models.orders import Order, OrderEvent, OrderItem
 from app.models.products import Product
+from app.models.shipments import Shipment, ShipmentEvent
 
 __all__ = [
     "AuditMixin",
@@ -43,6 +44,8 @@ __all__ = [
     "OrderItem",
     "Product",
     "Role",
+    "Shipment",
+    "ShipmentEvent",
     "StockMovement",
     "SoftDeleteMixin",
     "UTCDateTimeMixin",

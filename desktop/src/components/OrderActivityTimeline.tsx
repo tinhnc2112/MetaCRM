@@ -67,6 +67,16 @@ function activityTitle(item: OrderTimelineItem): string {
   if (item.kind === "inventory_movement") {
     return item.movement_type === "ORDER_OUT" ? "Inventory consumed" : "Inventory restored";
   }
+  if (item.kind === "shipment_event") {
+    const labels: Record<string, string> = {
+      CREATED: "Shipment created",
+      PACKED: "Shipment packed",
+      SHIPPED: "Shipment shipped",
+      DELIVERED: "Shipment delivered",
+      CANCELLED: "Shipment cancelled"
+    };
+    return `${labels[item.event_type] ?? "Shipment updated"} · ${item.shipment_number}`;
+  }
   const fixedLabels: Partial<Record<OrderEventTimelineItem["event_type"], string>> = {
     ORDER_CREATED: "Order created",
     ORDER_CONFIRMED: "Order confirmed",
@@ -82,6 +92,9 @@ function activityTitle(item: OrderTimelineItem): string {
 function timelineColor(item: OrderTimelineItem): string {
   if (item.kind === "inventory_movement") {
     return item.movement_type === "ORDER_OUT" ? "blue" : "green";
+  }
+  if (item.kind === "shipment_event") {
+    return item.event_type === "CANCELLED" ? "red" : item.event_type === "DELIVERED" ? "green" : "blue";
   }
   if (item.event_type === "ORDER_CANCELLED") {
     return "red";

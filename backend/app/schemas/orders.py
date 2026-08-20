@@ -234,8 +234,20 @@ class InventoryMovementTimelineItem(BaseModel):
     created_at: datetime
 
 
+class ShipmentEventTimelineItem(BaseModel):
+    kind: Literal["shipment_event"] = "shipment_event"
+    public_id: str
+    shipment_uuid: str
+    shipment_number: str
+    event_type: Literal["CREATED", "PACKED", "SHIPPED", "DELIVERED", "CANCELLED"]
+    from_value: str | None = None
+    to_value: str | None = None
+    actor: OrderTimelineActor | None = None
+    created_at: datetime
+
+
 class OrderTimelineResponse(BaseModel):
-    items: list[OrderEventTimelineItem | InventoryMovementTimelineItem]
+    items: list[OrderEventTimelineItem | InventoryMovementTimelineItem | ShipmentEventTimelineItem]
 
 
 class CustomerOrderSummaryResponse(BaseModel):

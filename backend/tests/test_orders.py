@@ -2860,4 +2860,4 @@ def test_order_timeline_has_constant_query_count(
         event.remove(bind, "before_cursor_execute", count_statement)
 
     assert timeline is not None
-    assert statement_count == 5
+    assert statement_count == 6

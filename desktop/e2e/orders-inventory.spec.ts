@@ -1,6 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 
-import { E2E, expect, test } from "./fixtures";
+import { E2E, expect, selectPage, test } from "./fixtures";
 
 const API_BASE_URL = "http://127.0.0.1:8001";
 
@@ -245,30 +245,6 @@ async function createOrderFromCustomer(
   await expect(dialog).toBeHidden();
   await expect(page.getByText(order.order_number, { exact: true })).toBeVisible();
   return order;
-}
-
-async function selectPage(page: Page, pageName: string): Promise<void> {
-  await page.getByRole("menuitem", { name: "Facebook" }).click();
-  await expect(page.getByRole("heading", { name: "Facebook", level: 2 })).toBeVisible();
-  const pageRow = page.getByRole("listitem").filter({ hasText: pageName });
-  await expect(pageRow).toBeVisible();
-  if ((await pageRow.getByRole("button", { name: "Current Page" }).count()) > 0) {
-    return;
-  }
-
-  const currentSection = page
-    .getByRole("heading", { name: "Current Page", level: 4 })
-    .locator("..");
-  const currentPageName = currentSection.locator("span.ant-typography");
-  const switchResponse = page.waitForResponse(
-    (response) =>
-      response.url().includes("/api/v1/facebook/pages/") &&
-      response.url().endsWith("/select") &&
-      response.request().method() === "POST"
-  );
-  await pageRow.getByRole("button", { name: "Select" }).click();
-  expect((await switchResponse).status()).toBe(200);
-  await expect(currentPageName).toHaveText(pageName);
 }
 
 async function goToOrdersAndSearch(page: Page, orderNumber: string): Promise<void> {

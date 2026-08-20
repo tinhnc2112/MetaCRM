@@ -13,12 +13,15 @@ import {
 } from "../components/OrderOperationsDetail";
 import { getCurrentFacebookPage } from "../services/facebookService";
 import {
+  createOrderShipment,
   getOrder,
   getOrderOperationalSummary,
   getOrderTimeline,
+  listOrderShipments,
   listOrders,
   updateOrder,
-  updateOrderShippingDestination
+  updateOrderShippingDestination,
+  updateShipmentStatus
 } from "../services/orderService";
 import type {
   OrderListItem,
@@ -27,6 +30,7 @@ import type {
   OrderStatus,
   OrderUpdatePayload,
   PaymentStatus,
+  ShipmentStatus,
   ShippingDestinationInput,
   ShippingStatus
 } from "../types/order";
@@ -46,6 +50,13 @@ type UpdateVariables = {
 
 type ShippingUpdateVariables = Omit<UpdateVariables, "payload"> & {
   payload: ShippingDestinationInput;
+};
+
+type ShipmentCreateVariables = Omit<UpdateVariables, "payload">;
+
+type ShipmentStatusVariables = Omit<UpdateVariables, "payload"> & {
+  shipmentUuid: string;
+  status: ShipmentStatus;
 };
 
 export function OrderOperationsPage() {
@@ -114,6 +125,11 @@ export function OrderOperationsPage() {
   const timelineQuery = useQuery({
     queryKey: ["order-timeline", currentPageId, selectedOrderUuid],
     queryFn: () => getOrderTimeline(selectedOrderUuid as string),
+    enabled: Boolean(currentPageId && selectedOrderUuid)
+  });
+  const shipmentsQuery = useQuery({
+    queryKey: ["order-shipments", currentPageId, selectedOrderUuid],
+    queryFn: () => listOrderShipments(selectedOrderUuid as string),
     enabled: Boolean(currentPageId && selectedOrderUuid)
   });
 
@@ -192,6 +208,63 @@ export function OrderOperationsPage() {
     }
   });
 
+  const invalidateOrderWork = async (variables: { pageId: string; orderUuid: string; customerUuid: string }) => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["orders", variables.pageId] }),
+      queryClient.invalidateQueries({
+        queryKey: ["order-operational-summary", variables.pageId]
+      }),
+      queryClient.invalidateQueries({ queryKey: ["order", variables.pageId, variables.orderUuid] }),
+      queryClient.invalidateQueries({
+        queryKey: ["order-timeline", variables.pageId, variables.orderUuid]
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["order-shipments", variables.pageId, variables.orderUuid]
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["customer-orders", variables.pageId, variables.customerUuid]
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["customer-order-summary", variables.pageId, variables.customerUuid]
+      })
+    ]);
+  };
+
+  const createShipmentMutation = useMutation({
+    mutationFn: ({ orderUuid }: ShipmentCreateVariables) => createOrderShipment(orderUuid),
+    onSuccess: async (_, variables) => {
+      await invalidateOrderWork(variables);
+      if (currentContextRef.current !== variables.contextKey) {
+        return;
+      }
+      setOperationError(null);
+      void message.success("Shipment created.");
+    },
+    onError: (error, variables) => {
+      if (currentContextRef.current === variables.contextKey) {
+        setOperationError(getReadableOrderError(error));
+      }
+    }
+  });
+
+  const shipmentStatusMutation = useMutation({
+    mutationFn: ({ shipmentUuid, status }: ShipmentStatusVariables) =>
+      updateShipmentStatus(shipmentUuid, status),
+    onSuccess: async (_, variables) => {
+      await invalidateOrderWork(variables);
+      if (currentContextRef.current !== variables.contextKey) {
+        return;
+      }
+      setOperationError(null);
+      void message.success("Shipment updated.");
+    },
+    onError: (error, variables) => {
+      if (currentContextRef.current === variables.contextKey) {
+        setOperationError(getReadableOrderError(error));
+      }
+    }
+  });
+
   const submitUpdate = (payload: OrderUpdatePayload) => {
     const order = detailQuery.data;
     if (!currentPageId || !selectedOrderUuid || !order || updateMutation.isPending) {
@@ -238,6 +311,36 @@ export function OrderOperationsPage() {
       okText: status === "confirmed" ? "Confirm Order" : "Cancel Order",
       okButtonProps: { danger: status === "cancelled" },
       onOk: () => submitUpdate({ status })
+    });
+  };
+
+  const submitCreateShipment = () => {
+    const order = detailQuery.data;
+    if (!currentPageId || !selectedOrderUuid || !order || createShipmentMutation.isPending) {
+      return;
+    }
+    setOperationError(null);
+    createShipmentMutation.mutate({
+      pageId: currentPageId,
+      orderUuid: selectedOrderUuid,
+      customerUuid: order.customer_uuid,
+      contextKey: currentContextKey
+    });
+  };
+
+  const submitShipmentStatus = (shipmentUuid: string, status: ShipmentStatus) => {
+    const order = detailQuery.data;
+    if (!currentPageId || !selectedOrderUuid || !order || shipmentStatusMutation.isPending) {
+      return;
+    }
+    setOperationError(null);
+    shipmentStatusMutation.mutate({
+      pageId: currentPageId,
+      orderUuid: selectedOrderUuid,
+      customerUuid: order.customer_uuid,
+      shipmentUuid,
+      status,
+      contextKey: currentContextKey
     });
   };
 
@@ -396,10 +499,13 @@ export function OrderOperationsPage() {
         loading={detailQuery.isLoading}
         loadError={detailQuery.isError ? getReadableOrderError(detailQuery.error) : null}
         operationError={operationError}
+        shipments={shipmentsQuery.data?.items ?? []}
+        shipmentsLoading={shipmentsQuery.isLoading}
+        shipmentsError={shipmentsQuery.isError ? getReadableOrderError(shipmentsQuery.error) : null}
         activityItems={timelineQuery.data?.items ?? []}
         activityLoading={timelineQuery.isLoading}
         activityError={timelineQuery.isError ? getReadableOrderError(timelineQuery.error) : null}
-        updating={updateMutation.isPending || shippingMutation.isPending}
+        updating={updateMutation.isPending || shippingMutation.isPending || createShipmentMutation.isPending || shipmentStatusMutation.isPending}
         onClose={() => { setSelectedOrderUuid(null); setOperationError(null); }}
         onRetry={() => void detailQuery.refetch()}
         onRetryActivity={() => void timelineQuery.refetch()}
@@ -407,6 +513,8 @@ export function OrderOperationsPage() {
         onUpdate={submitUpdate}
         onUpdateShipping={submitShippingUpdate}
         onLifecycleChange={requestLifecycleChange}
+        onCreateShipment={submitCreateShipment}
+        onShipmentStatusChange={submitShipmentStatus}
       />
     </div>
   );
