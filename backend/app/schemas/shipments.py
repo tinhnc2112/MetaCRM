@@ -32,6 +32,9 @@ class ShipmentResponse(BaseModel):
     shipment_number: str
     status: ShipmentStatus
     recipient: ShipmentRecipientResponse
+    carrier_account_uuid: str | None = None
+    carrier_provider_code: str | None = None
+    carrier_account_display_name: str | None = None
     carrier_code: str | None = None
     carrier_name: str | None = None
     tracking_number: str | None = None

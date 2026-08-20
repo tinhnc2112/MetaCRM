@@ -26,6 +26,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 if TYPE_CHECKING:
     from app.models.auth import User
+    from app.models.carriers import CarrierAccount
     from app.models.orders import Order
 
 
@@ -42,12 +43,16 @@ class Shipment(Base):
         ),
         Index("ix_shipments_order_created", "order_id", "created_at"),
         Index("ix_shipments_status", "status"),
+        Index("ix_shipments_carrier_account_id", "carrier_account_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     public_id: Mapped[UUID] = mapped_column(nullable=False, default=uuid4)
     order_id: Mapped[int] = mapped_column(
         ForeignKey("orders.id", ondelete="RESTRICT"), nullable=False
+    )
+    carrier_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("carrier_accounts.id", ondelete="SET NULL"), nullable=True
     )
     shipment_number: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready")
@@ -86,6 +91,7 @@ class Shipment(Base):
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     order: Mapped[Order] = relationship(back_populates="shipments")
+    carrier_account: Mapped[CarrierAccount | None] = relationship(back_populates="shipments")
     created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
     updated_by: Mapped[User | None] = relationship(foreign_keys=[updated_by_id])
     events: Mapped[list[ShipmentEvent]] = relationship(

@@ -125,6 +125,10 @@ body {
   object-fit: cover;
 }
 
+.carrier-credential-form {
+  margin-top: 16px;
+}
+
 .customer-segments-page {
   display: flex;
   flex-direction: column;

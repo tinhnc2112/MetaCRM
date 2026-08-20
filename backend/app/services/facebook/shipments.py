@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from uuid import UUID, uuid4
 
 from app.models.auth import User
+from app.models.carriers import CarrierAccount
 from app.models.orders import Order
 from app.models.shipments import Shipment, ShipmentEvent
 from app.services.facebook.orders import (
@@ -298,6 +299,47 @@ def get_shipment(
     shipment_uuid: str,
 ) -> Shipment | None:
     return _resolve_shipment_for_page(session, user, shipment_uuid)
+
+
+def bind_carrier_account(
+    session: Session,
+    user: User,
+    shipment_uuid: str,
+    carrier_account_uuid: str | None,
+) -> Shipment | None:
+    """Bind or clear an account while enforcing Shipment and account Page equality."""
+    try:
+        shipment = _resolve_shipment_for_page(session, user, shipment_uuid, lock=True)
+        if shipment is None:
+            return None
+        if carrier_account_uuid is None:
+            shipment.carrier_account_id = None
+        else:
+            try:
+                account_public_id = UUID(carrier_account_uuid)
+            except ValueError:
+                return None
+            account = (
+                session.query(CarrierAccount)
+                .filter(
+                    CarrierAccount.public_id == account_public_id,
+                    CarrierAccount.facebook_page_id == shipment.order.facebook_page_id,
+                    CarrierAccount.status == "active",
+                )
+                .first()
+            )
+            if account is None:
+                return None
+            shipment.carrier_account_id = account.id
+        shipment.updated_by_id = user.id
+        shipment.updated_at = datetime.now(UTC)
+        session.add(shipment)
+        session.commit()
+        session.refresh(shipment)
+        return shipment
+    except Exception:
+        session.rollback()
+        raise
 
 
 def update_shipment_status(

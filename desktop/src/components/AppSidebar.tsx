@@ -6,6 +6,7 @@ import {
   ShoppingCartOutlined,
   ShoppingOutlined,
   SettingOutlined,
+  TruckOutlined,
   TeamOutlined,
   UserSwitchOutlined
 } from "@ant-design/icons";
@@ -64,6 +65,11 @@ export function AppSidebar() {
                 key: "/settings/facebook",
                 icon: <FacebookOutlined />,
                 label: "Facebook"
+              },
+              {
+                key: "/settings/carriers",
+                icon: <TruckOutlined />,
+                label: "Carriers"
               },
               {
                 key: "/settings/segments",

@@ -56,6 +56,15 @@ def serialize_shipment(shipment) -> ShipmentResponse:
             country_code=shipment.country_code,
             delivery_note=shipment.delivery_note,
         ),
+        carrier_account_uuid=(
+            str(shipment.carrier_account.public_id) if shipment.carrier_account else None
+        ),
+        carrier_provider_code=(
+            shipment.carrier_account.provider_code if shipment.carrier_account else None
+        ),
+        carrier_account_display_name=(
+            shipment.carrier_account.display_name if shipment.carrier_account else None
+        ),
         carrier_code=shipment.carrier_code,
         carrier_name=shipment.carrier_name,
         tracking_number=shipment.tracking_number,

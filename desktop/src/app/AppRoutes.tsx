@@ -10,6 +10,7 @@ import { MessengerInboxPage } from "../pages/MessengerInboxPage";
 import { LoginPage } from "../pages/LoginPage";
 import { ProductManagementPage } from "../pages/ProductManagementPage";
 import { OrderOperationsPage } from "../pages/OrderOperationsPage";
+import { CarrierSettingsPage } from "../pages/CarrierSettingsPage";
 
 export function AppRoutes() {
   return (
@@ -23,6 +24,7 @@ export function AppRoutes() {
         <Route path="/products" element={<ProductManagementPage />} />
         <Route path="/orders" element={<OrderOperationsPage />} />
         <Route path="/settings/facebook" element={<FacebookSettingsPage />} />
+        <Route path="/settings/carriers" element={<CarrierSettingsPage />} />
         <Route path="/settings/segments" element={<CustomerSegmentsPage />} />
         <Route path="/settings/duplicates" element={<CustomerDuplicatesPage />} />
       </Route>

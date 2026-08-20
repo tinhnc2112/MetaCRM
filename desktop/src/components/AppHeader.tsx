@@ -42,6 +42,9 @@ function getHeaderTitle(pathname: string): string {
   if (pathname.startsWith("/settings/facebook")) {
     return "Facebook Settings";
   }
+  if (pathname.startsWith("/settings/carriers")) {
+    return "Carrier Settings";
+  }
   if (pathname.startsWith("/settings/segments")) {
     return "Customer Segments";
   }

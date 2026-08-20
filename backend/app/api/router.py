@@ -1,6 +1,7 @@
 """Top-level API router."""
 
 from app.api.auth import router as auth_router
+from app.api.carriers import router as carriers_router
 from app.api.conversations import router as conversations_router
 from app.api.customer_segments import router as customer_segments_router
 from app.api.customer_tags import router as customer_tags_router
@@ -19,6 +20,7 @@ api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(system_router, prefix="/system")
 api_router.include_router(auth_router)
 api_router.include_router(facebook_router)
+api_router.include_router(carriers_router)
 api_router.include_router(customer_tags_router)
 api_router.include_router(customer_segments_router)
 api_router.include_router(customers_router)
