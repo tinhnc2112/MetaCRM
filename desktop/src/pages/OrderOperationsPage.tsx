@@ -21,7 +21,8 @@ import {
   listOrders,
   updateOrder,
   updateOrderShippingDestination,
-  updateShipmentStatus
+  updateShipmentStatus,
+  updateShipmentTracking
 } from "../services/orderService";
 import type {
   OrderListItem,
@@ -31,6 +32,7 @@ import type {
   OrderUpdatePayload,
   PaymentStatus,
   ShipmentStatus,
+  ShipmentTrackingPayload,
   ShippingDestinationInput,
   ShippingStatus
 } from "../types/order";
@@ -57,6 +59,11 @@ type ShipmentCreateVariables = Omit<UpdateVariables, "payload">;
 type ShipmentStatusVariables = Omit<UpdateVariables, "payload"> & {
   shipmentUuid: string;
   status: ShipmentStatus;
+};
+
+type ShipmentTrackingVariables = Omit<UpdateVariables, "payload"> & {
+  shipmentUuid: string;
+  payload: ShipmentTrackingPayload;
 };
 
 export function OrderOperationsPage() {
@@ -265,6 +272,24 @@ export function OrderOperationsPage() {
     }
   });
 
+  const shipmentTrackingMutation = useMutation({
+    mutationFn: ({ shipmentUuid, payload }: ShipmentTrackingVariables) =>
+      updateShipmentTracking(shipmentUuid, payload),
+    onSuccess: async (_, variables) => {
+      await invalidateOrderWork(variables);
+      if (currentContextRef.current !== variables.contextKey) {
+        return;
+      }
+      setOperationError(null);
+      void message.success("Shipment tracking updated.");
+    },
+    onError: (error, variables) => {
+      if (currentContextRef.current === variables.contextKey) {
+        setOperationError(getReadableOrderError(error));
+      }
+    }
+  });
+
   const submitUpdate = (payload: OrderUpdatePayload) => {
     const order = detailQuery.data;
     if (!currentPageId || !selectedOrderUuid || !order || updateMutation.isPending) {
@@ -340,6 +365,22 @@ export function OrderOperationsPage() {
       customerUuid: order.customer_uuid,
       shipmentUuid,
       status,
+      contextKey: currentContextKey
+    });
+  };
+
+  const submitShipmentTracking = (shipmentUuid: string, payload: ShipmentTrackingPayload) => {
+    const order = detailQuery.data;
+    if (!currentPageId || !selectedOrderUuid || !order || shipmentTrackingMutation.isPending) {
+      return;
+    }
+    setOperationError(null);
+    shipmentTrackingMutation.mutate({
+      pageId: currentPageId,
+      orderUuid: selectedOrderUuid,
+      customerUuid: order.customer_uuid,
+      shipmentUuid,
+      payload,
       contextKey: currentContextKey
     });
   };
@@ -505,7 +546,7 @@ export function OrderOperationsPage() {
         activityItems={timelineQuery.data?.items ?? []}
         activityLoading={timelineQuery.isLoading}
         activityError={timelineQuery.isError ? getReadableOrderError(timelineQuery.error) : null}
-        updating={updateMutation.isPending || shippingMutation.isPending || createShipmentMutation.isPending || shipmentStatusMutation.isPending}
+        updating={updateMutation.isPending || shippingMutation.isPending || createShipmentMutation.isPending || shipmentStatusMutation.isPending || shipmentTrackingMutation.isPending}
         onClose={() => { setSelectedOrderUuid(null); setOperationError(null); }}
         onRetry={() => void detailQuery.refetch()}
         onRetryActivity={() => void timelineQuery.refetch()}
@@ -515,6 +556,7 @@ export function OrderOperationsPage() {
         onLifecycleChange={requestLifecycleChange}
         onCreateShipment={submitCreateShipment}
         onShipmentStatusChange={submitShipmentStatus}
+        onShipmentTrackingUpdate={submitShipmentTracking}
       />
     </div>
   );

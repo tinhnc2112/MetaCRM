@@ -88,13 +88,29 @@ export type Shipment = {
   shipment_number: string;
   status: ShipmentStatus;
   recipient: ShipmentRecipient;
+  carrier_code: string | null;
+  carrier_name: string | null;
   tracking_number: string | null;
+  tracking_url: string | null;
+  shipping_fee: string | null;
+  cod_amount: string | null;
+  note: string | null;
   created_at: string;
   updated_at: string;
   packed_at: string | null;
   shipped_at: string | null;
   delivered_at: string | null;
   cancelled_at: string | null;
+};
+
+export type ShipmentTrackingPayload = {
+  carrier_code?: string | null;
+  carrier_name?: string | null;
+  tracking_number?: string | null;
+  tracking_url?: string | null;
+  shipping_fee?: number | string | null;
+  cod_amount?: number | string | null;
+  note?: string | null;
 };
 
 export type ShipmentListResponse = {
@@ -207,9 +223,10 @@ export type ShipmentEventTimelineItem = {
   public_id: string;
   shipment_uuid: string;
   shipment_number: string;
-  event_type: "CREATED" | "PACKED" | "SHIPPED" | "DELIVERED" | "CANCELLED";
+  event_type: "CREATED" | "PACKED" | "SHIPPED" | "DELIVERED" | "CANCELLED" | "TRACKING_UPDATED";
   from_value: string | null;
   to_value: string | null;
+  details: Record<string, unknown> | null;
   actor: OrderTimelineActor | null;
   created_at: string;
 };

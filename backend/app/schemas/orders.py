@@ -217,6 +217,7 @@ class OrderEventTimelineItem(BaseModel):
     ]
     from_value: str | None = None
     to_value: str | None = None
+    details: dict | None = None
     actor: OrderTimelineActor | None = None
     created_at: datetime
 
@@ -239,9 +240,17 @@ class ShipmentEventTimelineItem(BaseModel):
     public_id: str
     shipment_uuid: str
     shipment_number: str
-    event_type: Literal["CREATED", "PACKED", "SHIPPED", "DELIVERED", "CANCELLED"]
+    event_type: Literal[
+        "CREATED",
+        "PACKED",
+        "SHIPPED",
+        "DELIVERED",
+        "CANCELLED",
+        "TRACKING_UPDATED",
+    ]
     from_value: str | None = None
     to_value: str | None = None
+    details: dict | None = None
     actor: OrderTimelineActor | None = None
     created_at: datetime
 

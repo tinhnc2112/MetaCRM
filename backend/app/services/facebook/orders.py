@@ -130,6 +130,7 @@ class OrderEventTimelineRecord:
     event_type: str
     from_value: str | None
     to_value: str | None
+    details: dict | None
     actor_name: str | None
     actor_email: str | None
     created_at: datetime
@@ -159,6 +160,7 @@ class ShipmentEventTimelineRecord:
     event_type: str
     from_value: str | None
     to_value: str | None
+    details: dict | None
     actor_name: str | None
     actor_email: str | None
     created_at: datetime
@@ -1266,6 +1268,7 @@ def get_order_timeline(
             event_type=event.event_type,
             from_value=event.from_value,
             to_value=event.to_value,
+            details=None,
             actor_name=actor_name,
             actor_email=actor_email,
             created_at=event.created_at,
@@ -1297,6 +1300,7 @@ def get_order_timeline(
             event_type=event.event_type,
             from_value=event.from_value,
             to_value=event.to_value,
+            details=event.details,
             actor_name=actor_name,
             actor_email=actor_email,
             created_at=event.created_at,

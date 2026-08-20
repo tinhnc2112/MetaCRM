@@ -12,6 +12,7 @@ import type {
   Shipment,
   ShipmentListResponse,
   ShipmentStatus,
+  ShipmentTrackingPayload,
   ShippingDestinationInput
 } from "../types/order";
 
@@ -127,6 +128,17 @@ export async function updateShipmentStatus(
   const response = await apiClient.patch<Shipment>(
     `/api/v1/facebook/shipments/${encodeURIComponent(shipmentUuid)}/status`,
     { status }
+  );
+  return response.data;
+}
+
+export async function updateShipmentTracking(
+  shipmentUuid: string,
+  payload: ShipmentTrackingPayload
+): Promise<Shipment> {
+  const response = await apiClient.patch<Shipment>(
+    `/api/v1/facebook/shipments/${encodeURIComponent(shipmentUuid)}/tracking`,
+    payload
   );
   return response.data;
 }

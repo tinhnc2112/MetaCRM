@@ -300,6 +300,7 @@ def get_order_timeline_endpoint(
                     event_type=item.event_type,
                     from_value=item.from_value,
                     to_value=item.to_value,
+                    details=item.details,
                     actor=actor,
                     created_at=item.created_at,
                 )
@@ -327,6 +328,7 @@ def get_order_timeline_endpoint(
                     event_type=item.event_type,
                     from_value=item.from_value,
                     to_value=item.to_value,
+                    details=item.details,
                     actor=actor,
                     created_at=item.created_at,
                 )

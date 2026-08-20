@@ -17,6 +17,12 @@ type Shipment = {
   shipment_number: string;
   status: "ready" | "packed" | "shipped" | "delivered" | "cancelled";
   recipient: { address_line: string; recipient_name: string };
+  carrier_name: string | null;
+  tracking_number: string | null;
+  tracking_url: string | null;
+  shipping_fee: string | null;
+  cod_amount: string | null;
+  note: string | null;
 };
 type TimelineItem = {
   kind: "order_event" | "inventory_movement" | "shipment_event";
@@ -52,6 +58,20 @@ test("creates and progresses a carrier-neutral Shipment from Order detail", asyn
   expect(await getOrder(page, accessToken, order.uuid)).toMatchObject({ shipping_status: "pending" });
   await expectNoInventoryMovements(page, accessToken, order.uuid);
 
+  await updateTrackingFromDetail(page, detail, shipment);
+  await expect(
+    shipmentCard.locator(".ant-descriptions-item-content").getByText("Manual Carrier", { exact: true })
+  ).toBeVisible();
+  await expect(
+    shipmentCard.locator(".ant-descriptions-item-content").getByText("M293-TRACK-123", { exact: true })
+  ).toBeVisible();
+  await expect(shipmentCard.getByRole("link", { name: "https://tracking.example/M293-TRACK-123" })).toHaveAttribute(
+    "href",
+    "https://tracking.example/M293-TRACK-123"
+  );
+  await expect(detail.getByText("Shipment tracking updated")).toBeVisible();
+  await expectNoInventoryMovements(page, accessToken, order.uuid);
+
   await updateShipmentFromDetail(page, detail, shipment, "Mark packed", "packed");
   await expect(detail.getByText(/^Shipping .* Packed$/)).toBeVisible();
   expect(await getOrder(page, accessToken, order.uuid)).toMatchObject({ shipping_status: "packed" });
@@ -68,6 +88,7 @@ test("creates and progresses a carrier-neutral Shipment from Order detail", asyn
   await expect(detail.getByText("Shipment delivered")).toBeVisible();
   await expectTimelineCounts(page, accessToken, order.uuid, {
     CREATED: 1,
+    TRACKING_UPDATED: 1,
     PACKED: 1,
     SHIPPED: 1,
     DELIVERED: 1,
@@ -222,6 +243,37 @@ async function updateShipmentFromDetail(
   const updatedShipment = (await response.json()) as Shipment;
   expect(updatedShipment.uuid).toBe(shipment.uuid);
   expect(updatedShipment.status).toBe(expectedStatus);
+}
+
+async function updateTrackingFromDetail(
+  page: Page,
+  detail: Locator,
+  shipment: Shipment
+): Promise<void> {
+  const card = shipmentCardByNumber(detail, shipment.shipment_number);
+  await expect(card).toBeVisible();
+  await card.getByRole("button", { name: "Edit tracking", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit tracking" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("Carrier name").fill("Manual Carrier");
+  await dialog.getByLabel("Tracking number").fill("M293-TRACK-123");
+  await dialog.getByLabel("Tracking URL").fill("https://tracking.example/M293-TRACK-123");
+  await dialog.getByLabel("Shipping fee").fill("15000");
+  await dialog.getByLabel("COD amount").fill("99000");
+  await dialog.getByLabel("Tracking note").fill("Leave at front desk");
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/v1/facebook/shipments/${shipment.uuid}/tracking`) &&
+      response.request().method() === "PATCH"
+  );
+  await dialog.getByRole("button", { name: "Save tracking", exact: true }).click();
+  const response = await responsePromise;
+  expect(response.status()).toBe(200);
+  const updatedShipment = (await response.json()) as Shipment;
+  expect(updatedShipment.uuid).toBe(shipment.uuid);
+  expect(updatedShipment.carrier_name).toBe("Manual Carrier");
+  expect(updatedShipment.tracking_number).toBe("M293-TRACK-123");
+  expect(updatedShipment.tracking_url).toBe("https://tracking.example/M293-TRACK-123");
 }
 
 async function cancelOrderFromDetail(

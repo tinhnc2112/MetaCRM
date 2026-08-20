@@ -194,6 +194,19 @@ def _patch_shipment(client: TestClient, user: User, shipment_uuid: str, status: 
     return response.json()
 
 
+def _patch_tracking(
+    client: TestClient,
+    user: User,
+    shipment_uuid: str,
+    payload: dict,
+):
+    return client.patch(
+        f"/api/v1/facebook/shipments/{shipment_uuid}/tracking",
+        headers=_auth(user),
+        json=payload,
+    )
+
+
 def test_create_list_get_snapshot_page_safe_and_stock_neutral(client: TestClient, session: Session) -> None:
     alice, bob = _users(session)
     page_a = _make_page(session, alice, "page-shipment-create-a")
@@ -339,6 +352,207 @@ def test_lifecycle_matrix_same_state_and_aggregation(client: TestClient, session
     assert terminal.status_code == 409
 
 
+def test_update_manual_tracking_metadata_normalizes_idempotently_and_stays_stock_neutral(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _users(session)
+    page = _make_page(session, alice, "page-shipment-tracking")
+    _select_page(session, alice, page)
+    customer = _customer(session, page, "tracking")
+    order = _create_confirmed_order(client, alice, customer)
+    original_order = client.get(f"/api/v1/facebook/orders/{order['uuid']}", headers=_auth(alice)).json()
+    shipment = _create_shipment(client, alice, order["uuid"])
+    shipment_row = session.query(Shipment).filter_by(public_id=UUID(shipment["uuid"])).one()
+    shipment_row.updated_at = datetime.now(UTC) - timedelta(days=1)
+    session.commit()
+    event_count = session.query(ShipmentEvent).count()
+    movement_count = session.query(StockMovement).count()
+
+    response = _patch_tracking(
+        client,
+        alice,
+        shipment["uuid"],
+        {
+            "carrier_code": "  GHN  ",
+            "carrier_name": "  Giao Hang Nhanh  ",
+            "tracking_number": "  GHN123456  ",
+            "tracking_url": "  https://tracking.example/GHN123456  ",
+            "shipping_fee": "15000.456",
+            "cod_amount": "99000",
+            "note": "  Front desk pickup  ",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    updated = response.json()
+    assert updated["carrier_code"] == "ghn"
+    assert updated["carrier_name"] == "Giao Hang Nhanh"
+    assert updated["tracking_number"] == "GHN123456"
+    assert updated["tracking_url"] == "https://tracking.example/GHN123456"
+    assert updated["shipping_fee"] == "15000.46"
+    assert updated["cod_amount"] == "99000.00"
+    assert updated["note"] == "Front desk pickup"
+    assert updated["updated_at"] != shipment["updated_at"]
+    assert session.query(ShipmentEvent).filter_by(event_type="TRACKING_UPDATED").count() == 1
+    assert session.query(ShipmentEvent).count() == event_count + 1
+    tracking_event = session.query(ShipmentEvent).filter_by(event_type="TRACKING_UPDATED").one()
+    assert tracking_event.details == {
+        "shipment_number": shipment["shipment_number"],
+        "carrier_code": "ghn",
+        "carrier_name": "Giao Hang Nhanh",
+        "carrier": "Giao Hang Nhanh",
+        "tracking_number": "GHN123456",
+        "tracking_url": "https://tracking.example/GHN123456",
+    }
+    after_order = client.get(f"/api/v1/facebook/orders/{order['uuid']}", headers=_auth(alice)).json()
+    assert after_order["status"] == original_order["status"]
+    assert after_order["shipping_status"] == original_order["shipping_status"]
+    assert after_order["payment_status"] == original_order["payment_status"]
+    assert after_order["subtotal_amount"] == original_order["subtotal_amount"]
+    assert after_order["shipping_fee"] == original_order["shipping_fee"]
+    assert after_order["total_amount"] == original_order["total_amount"]
+    assert session.query(StockMovement).count() == movement_count
+
+    retry = _patch_tracking(
+        client,
+        alice,
+        shipment["uuid"],
+        {
+            "carrier_code": "GHN",
+            "carrier_name": "Giao Hang Nhanh",
+            "tracking_number": "GHN123456",
+            "tracking_url": "https://tracking.example/GHN123456",
+            "shipping_fee": "15000.46",
+            "cod_amount": "99000.00",
+            "note": "Front desk pickup",
+        },
+    )
+    assert retry.status_code == 200, retry.text
+    assert session.query(ShipmentEvent).filter_by(event_type="TRACKING_UPDATED").count() == 1
+
+    cleared = _patch_tracking(
+        client,
+        alice,
+        shipment["uuid"],
+        {
+            "carrier_code": "  ",
+            "tracking_number": "",
+            "tracking_url": "",
+            "shipping_fee": None,
+            "cod_amount": None,
+            "note": " ",
+        },
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["carrier_code"] is None
+    assert cleared.json()["tracking_number"] is None
+    assert cleared.json()["tracking_url"] is None
+    assert cleared.json()["shipping_fee"] is None
+    assert cleared.json()["cod_amount"] is None
+    assert cleared.json()["note"] is None
+    assert session.query(ShipmentEvent).filter_by(event_type="TRACKING_UPDATED").count() == 2
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_status"),
+    [
+        ({"tracking_url": "ftp://tracking.example/1"}, 422),
+        ({"shipping_fee": "-0.01"}, 422),
+        ({"cod_amount": "-1"}, 422),
+    ],
+)
+def test_tracking_update_rejects_invalid_values(
+    client: TestClient, session: Session, payload: dict, expected_status: int
+) -> None:
+    alice, _ = _users(session)
+    page = _make_page(session, alice, "page-shipment-tracking-invalid")
+    _select_page(session, alice, page)
+    customer = _customer(session, page, "tracking-invalid")
+    order = _create_confirmed_order(client, alice, customer)
+    shipment = _create_shipment(client, alice, order["uuid"])
+    event_count = session.query(ShipmentEvent).count()
+
+    response = _patch_tracking(client, alice, shipment["uuid"], payload)
+
+    assert response.status_code == expected_status
+    assert session.query(ShipmentEvent).count() == event_count
+
+
+def test_tracking_update_is_page_safe(client: TestClient, session: Session) -> None:
+    alice, bob = _users(session)
+    page_a = _make_page(session, alice, "page-shipment-tracking-a")
+    page_b = _make_page(session, bob, "page-shipment-tracking-b")
+    _select_page(session, alice, page_a)
+    customer = _customer(session, page_a, "tracking-page")
+    order = _create_confirmed_order(client, alice, customer)
+    shipment = _create_shipment(client, alice, order["uuid"])
+
+    _select_page(session, bob, page_b)
+    response = _patch_tracking(
+        client,
+        bob,
+        shipment["uuid"],
+        {"tracking_number": "CROSS-PAGE"},
+    )
+
+    assert response.status_code == 404
+    assert session.query(ShipmentEvent).filter_by(event_type="TRACKING_UPDATED").count() == 0
+
+
+@pytest.mark.parametrize("blocked_status", ["delivered", "cancelled"])
+def test_tracking_update_rejects_terminal_shipments(
+    client: TestClient, session: Session, blocked_status: str
+) -> None:
+    alice, _ = _users(session)
+    page = _make_page(session, alice, f"page-shipment-tracking-{blocked_status}")
+    _select_page(session, alice, page)
+    customer = _customer(session, page, f"tracking-{blocked_status}")
+    order = _create_confirmed_order(client, alice, customer)
+    shipment = _create_shipment(client, alice, order["uuid"])
+    if blocked_status == "delivered":
+        _patch_shipment(client, alice, shipment["uuid"], "packed")
+        _patch_shipment(client, alice, shipment["uuid"], "shipped")
+        _patch_shipment(client, alice, shipment["uuid"], "delivered")
+    else:
+        _patch_shipment(client, alice, shipment["uuid"], "cancelled")
+
+    response = _patch_tracking(
+        client,
+        alice,
+        shipment["uuid"],
+        {"tracking_number": f"{blocked_status}-edit"},
+    )
+
+    assert response.status_code == 409
+    assert session.query(ShipmentEvent).filter_by(event_type="TRACKING_UPDATED").count() == 0
+
+
+@pytest.mark.parametrize("editable_status", ["ready", "packed", "shipped"])
+def test_tracking_update_allows_active_editable_statuses(
+    client: TestClient, session: Session, editable_status: str
+) -> None:
+    alice, _ = _users(session)
+    page = _make_page(session, alice, f"page-shipment-tracking-{editable_status}")
+    _select_page(session, alice, page)
+    customer = _customer(session, page, f"tracking-{editable_status}")
+    order = _create_confirmed_order(client, alice, customer)
+    shipment = _create_shipment(client, alice, order["uuid"])
+    if editable_status in {"packed", "shipped"}:
+        _patch_shipment(client, alice, shipment["uuid"], "packed")
+    if editable_status == "shipped":
+        _patch_shipment(client, alice, shipment["uuid"], "shipped")
+
+    response = _patch_tracking(
+        client,
+        alice,
+        shipment["uuid"],
+        {"tracking_number": f"{editable_status}-tracking"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["tracking_number"] == f"{editable_status}-tracking"
+
+
 def test_cancelled_replacement_snapshot_and_order_safety(client: TestClient, session: Session) -> None:
     alice, _ = _users(session)
     page = _make_page(session, alice, "page-shipment-replacement")
@@ -443,6 +657,17 @@ def test_timeline_includes_shipment_events_and_keeps_query_count_constant(
     customer = _customer(session, page, "timeline")
     order = _create_confirmed_order(client, alice, customer)
     shipment = _create_shipment(client, alice, order["uuid"])
+    tracking = _patch_tracking(
+        client,
+        alice,
+        shipment["uuid"],
+        {
+            "carrier_name": "Manual Carrier",
+            "tracking_number": "TRACK-123",
+            "tracking_url": "https://tracking.example/TRACK-123",
+        },
+    )
+    assert tracking.status_code == 200, tracking.text
     _patch_shipment(client, alice, shipment["uuid"], "packed")
 
     response = client.get(
@@ -455,9 +680,15 @@ def test_timeline_includes_shipment_events_and_keeps_query_count_constant(
     ]
     assert [(item["shipment_number"], item["event_type"]) for item in shipment_items] == [
         (shipment["shipment_number"], "CREATED"),
+        (shipment["shipment_number"], "TRACKING_UPDATED"),
         (shipment["shipment_number"], "PACKED"),
     ]
     assert "shipment_id" not in shipment_items[0]
+    tracking_item = next(
+        item for item in shipment_items if item["event_type"] == "TRACKING_UPDATED"
+    )
+    assert tracking_item["details"]["carrier"] == "Manual Carrier"
+    assert tracking_item["details"]["tracking_number"] == "TRACK-123"
 
     statement_count = 0
 

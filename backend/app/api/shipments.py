@@ -13,6 +13,7 @@ from app.schemas.shipments import (
     ShipmentRecipientResponse,
     ShipmentResponse,
     ShipmentStatusUpdate,
+    ShipmentTrackingUpdate,
 )
 from app.services.facebook.shipments import (
     ShipmentStateError,
@@ -20,6 +21,7 @@ from app.services.facebook.shipments import (
     get_shipment,
     list_shipments_for_order,
     update_shipment_status,
+    update_shipment_tracking,
 )
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -35,6 +37,9 @@ def _validate_uuid(value: str, *, detail: str) -> None:
 
 
 def serialize_shipment(shipment) -> ShipmentResponse:
+    def money(value) -> str | None:
+        return None if value is None else str(value)
+
     return ShipmentResponse(
         uuid=str(shipment.public_id),
         order_uuid=str(shipment.order.public_id),
@@ -51,7 +56,13 @@ def serialize_shipment(shipment) -> ShipmentResponse:
             country_code=shipment.country_code,
             delivery_note=shipment.delivery_note,
         ),
+        carrier_code=shipment.carrier_code,
+        carrier_name=shipment.carrier_name,
         tracking_number=shipment.tracking_number,
+        tracking_url=shipment.tracking_url,
+        shipping_fee=money(shipment.shipping_fee),
+        cod_amount=money(shipment.cod_amount),
+        note=shipment.note,
         created_at=shipment.created_at,
         updated_at=shipment.updated_at,
         packed_at=shipment.packed_at,
@@ -113,6 +124,33 @@ def update_shipment_status_endpoint(
     _validate_uuid(shipment_id, detail="Shipment not found")
     try:
         shipment = update_shipment_status(session, current_user, shipment_id, payload.status)
+    except ShipmentStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    if shipment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shipment not found")
+    return serialize_shipment(shipment)
+
+
+@router.patch("/shipments/{shipment_id}/tracking", response_model=ShipmentResponse)
+def update_shipment_tracking_endpoint(
+    shipment_id: str,
+    payload: ShipmentTrackingUpdate,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> ShipmentResponse:
+    _validate_uuid(shipment_id, detail="Shipment not found")
+    try:
+        shipment = update_shipment_tracking(
+            session,
+            current_user,
+            shipment_id,
+            payload.model_dump(exclude_unset=True),
+        )
     except ShipmentStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:

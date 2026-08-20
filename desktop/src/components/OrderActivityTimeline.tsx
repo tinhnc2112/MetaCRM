@@ -53,6 +53,9 @@ export function OrderActivityTimeline({
                 {` · ${item.quantity_before} → ${item.quantity_after}`}
               </Typography.Text>
             ) : null}
+            {item.kind === "shipment_event" && item.event_type === "TRACKING_UPDATED" ? (
+              <Typography.Text>{trackingDetails(item.details)}</Typography.Text>
+            ) : null}
             <Typography.Text type="secondary">
               {formatTimestamp(item.created_at)} · {actorLabel(item.actor)}
             </Typography.Text>
@@ -73,7 +76,8 @@ function activityTitle(item: OrderTimelineItem): string {
       PACKED: "Shipment packed",
       SHIPPED: "Shipment shipped",
       DELIVERED: "Shipment delivered",
-      CANCELLED: "Shipment cancelled"
+      CANCELLED: "Shipment cancelled",
+      TRACKING_UPDATED: "Shipment tracking updated"
     };
     return `${labels[item.event_type] ?? "Shipment updated"} · ${item.shipment_number}`;
   }
@@ -103,6 +107,14 @@ function timelineColor(item: OrderTimelineItem): string {
     return "green";
   }
   return "blue";
+}
+
+function trackingDetails(details: Record<string, unknown> | null): string {
+  const carrier = typeof details?.carrier === "string" ? details.carrier : null;
+  const trackingNumber = typeof details?.tracking_number === "string"
+    ? details.tracking_number
+    : null;
+  return [carrier, trackingNumber].filter(Boolean).join(" Â· ") || "Manual tracking metadata changed";
 }
 
 function actorLabel(actor: OrderTimelineItem["actor"]): string {

@@ -1,5 +1,6 @@
-import { Alert, Button, Descriptions, Divider, Empty, Input, List, Modal, Select, Space, Spin, Tag, Typography } from "antd";
+import { Alert, Button, Descriptions, Divider, Empty, Input, InputNumber, List, Modal, Select, Space, Spin, Tag, Typography } from "antd";
 import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 
 import { OrderActivityTimeline } from "./OrderActivityTimeline";
 import type {
@@ -10,6 +11,7 @@ import type {
   PaymentStatus,
   Shipment,
   ShipmentStatus,
+  ShipmentTrackingPayload,
   ShippingDestinationInput,
   ShippingStatus
 } from "../types/order";
@@ -51,6 +53,7 @@ type OrderOperationsDetailProps = {
   onLifecycleChange: (status: OrderStatus) => void;
   onCreateShipment: () => void;
   onShipmentStatusChange: (shipmentUuid: string, status: ShipmentStatus) => void;
+  onShipmentTrackingUpdate: (shipmentUuid: string, payload: ShipmentTrackingPayload) => void;
 };
 
 export function OrderOperationsDetail({
@@ -74,12 +77,15 @@ export function OrderOperationsDetail({
   onUpdateShipping,
   onLifecycleChange,
   onCreateShipment,
-  onShipmentStatusChange
+  onShipmentStatusChange,
+  onShipmentTrackingUpdate
 }: OrderOperationsDetailProps) {
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>("unpaid");
   const [shippingStatus, setShippingStatus] = useState<ShippingStatus>("pending");
   const [shippingEditorOpen, setShippingEditorOpen] = useState(false);
   const [shippingDraft, setShippingDraft] = useState(() => emptyShippingDraft());
+  const [trackingEditorShipment, setTrackingEditorShipment] = useState<Shipment | null>(null);
+  const [trackingDraft, setTrackingDraft] = useState(() => emptyTrackingDraft());
 
   useEffect(() => {
     if (!order) {
@@ -89,7 +95,19 @@ export function OrderOperationsDetail({
     setShippingStatus(order.shipping_status);
     setShippingDraft(buildShippingDraft(order));
     setShippingEditorOpen(false);
+    setTrackingEditorShipment(null);
   }, [order?.uuid, order?.payment_status, order?.shipping_status, order?.updated_at]);
+
+  useEffect(() => {
+    if (!trackingEditorShipment) {
+      return;
+    }
+    const refreshed = shipments.find((shipment) => shipment.uuid === trackingEditorShipment.uuid);
+    if (refreshed) {
+      setTrackingEditorShipment(refreshed);
+      setTrackingDraft(buildTrackingDraft(refreshed));
+    }
+  }, [shipments, trackingEditorShipment?.uuid]);
 
   const statusChanged = Boolean(
     order &&
@@ -308,23 +326,41 @@ export function OrderOperationsDetail({
                 rowKey="uuid"
                 renderItem={(shipment) => (
                   <List.Item
-                    actions={shipmentActions(shipment).map((action) => (
-                      <Button
-                        key={action.status}
-                        size="small"
-                        danger={action.status === "cancelled"}
-                        disabled={updating}
-                        onClick={() => onShipmentStatusChange(shipment.uuid, action.status)}
-                      >
-                        {action.label}
-                      </Button>
-                    ))}
+                    actions={[
+                      ...(shipmentTrackingEditable(shipment) ? [
+                        <Button
+                          key="tracking"
+                          size="small"
+                          disabled={updating}
+                          onClick={() => {
+                            setTrackingEditorShipment(shipment);
+                            setTrackingDraft(buildTrackingDraft(shipment));
+                          }}
+                        >
+                          Edit tracking
+                        </Button>
+                      ] : []),
+                      ...shipmentActions(shipment).map((action) => (
+                        <Button
+                          key={action.status}
+                          size="small"
+                          danger={action.status === "cancelled"}
+                          disabled={updating}
+                          onClick={() => onShipmentStatusChange(shipment.uuid, action.status)}
+                        >
+                          {action.label}
+                        </Button>
+                      ))
+                    ]}
                   >
                     <List.Item.Meta
                       title={
                         <Space wrap>
                           <Typography.Text strong>{shipment.shipment_number}</Typography.Text>
                           <ShipmentStatusBadge value={shipment.status} />
+                          {shipment.carrier_name || shipment.carrier_code ? (
+                            <Tag>{shipment.carrier_name ?? shipment.carrier_code}</Tag>
+                          ) : null}
                           {shipment.tracking_number ? <Tag>{shipment.tracking_number}</Tag> : null}
                         </Space>
                       }
@@ -339,6 +375,7 @@ export function OrderOperationsDetail({
                           <Typography.Text type="secondary">
                             Created {formatTimestamp(shipment.created_at)}
                           </Typography.Text>
+                          <ShipmentTrackingSummary shipment={shipment} />
                         </Space>
                       }
                     />
@@ -404,6 +441,34 @@ export function OrderOperationsDetail({
               <Input.TextArea aria-label="Delivery note" placeholder="Delivery note" value={shippingDraft.note} maxLength={5000} onChange={(event) => setShippingDraft({ ...shippingDraft, note: event.target.value })} />
             </div>
           </Modal>
+          <Modal
+            title="Edit tracking"
+            open={Boolean(trackingEditorShipment)}
+            onCancel={() => setTrackingEditorShipment(null)}
+            onOk={() => {
+              if (!trackingEditorShipment) {
+                return;
+              }
+              onShipmentTrackingUpdate(
+                trackingEditorShipment.uuid,
+                trackingDraftPayload(trackingDraft)
+              );
+              setTrackingEditorShipment(null);
+            }}
+            okText="Save tracking"
+            confirmLoading={updating}
+            destroyOnClose
+          >
+            <div className="create-order-form">
+              <Input aria-label="Carrier code" placeholder="Carrier code" value={trackingDraft.carrier_code} maxLength={64} onChange={(event) => setTrackingDraft({ ...trackingDraft, carrier_code: event.target.value })} />
+              <Input aria-label="Carrier name" placeholder="Carrier name" value={trackingDraft.carrier_name} maxLength={255} onChange={(event) => setTrackingDraft({ ...trackingDraft, carrier_name: event.target.value })} />
+              <Input aria-label="Tracking number" placeholder="Tracking number" value={trackingDraft.tracking_number} maxLength={255} onChange={(event) => setTrackingDraft({ ...trackingDraft, tracking_number: event.target.value })} />
+              <Input aria-label="Tracking URL" placeholder="https://carrier.example/track/123" value={trackingDraft.tracking_url} maxLength={5000} onChange={(event) => setTrackingDraft({ ...trackingDraft, tracking_url: event.target.value })} />
+              <InputNumber aria-label="Shipping fee" placeholder="Shipping fee" value={trackingDraft.shipping_fee} min="0" precision={2} stringMode onChange={(value) => setTrackingDraft({ ...trackingDraft, shipping_fee: value === null ? null : String(value) })} />
+              <InputNumber aria-label="COD amount" placeholder="COD amount" value={trackingDraft.cod_amount} min="0" precision={2} stringMode onChange={(value) => setTrackingDraft({ ...trackingDraft, cod_amount: value === null ? null : String(value) })} />
+              <Input.TextArea aria-label="Tracking note" placeholder="Note" value={trackingDraft.note} maxLength={5000} onChange={(event) => setTrackingDraft({ ...trackingDraft, note: event.target.value })} />
+            </div>
+          </Modal>
         </div>
       )}
     </Modal>
@@ -414,6 +479,16 @@ type ShippingDraft = Record<
   "recipient_name" | "recipient_phone" | "address_line" | "ward" | "district" | "province" | "postal_code" | "country_code" | "note",
   string
 >;
+
+type TrackingDraft = {
+  carrier_code: string;
+  carrier_name: string;
+  tracking_number: string;
+  tracking_url: string;
+  shipping_fee: string | null;
+  cod_amount: string | null;
+  note: string;
+};
 
 function emptyShippingDraft(): ShippingDraft {
   return {
@@ -459,6 +534,43 @@ function shippingDraftPayload(draft: ShippingDraft): ShippingDestinationInput {
   };
 }
 
+function emptyTrackingDraft(): TrackingDraft {
+  return {
+    carrier_code: "",
+    carrier_name: "",
+    tracking_number: "",
+    tracking_url: "",
+    shipping_fee: null,
+    cod_amount: null,
+    note: ""
+  };
+}
+
+function buildTrackingDraft(shipment: Shipment): TrackingDraft {
+  return {
+    carrier_code: shipment.carrier_code ?? "",
+    carrier_name: shipment.carrier_name ?? "",
+    tracking_number: shipment.tracking_number ?? "",
+    tracking_url: shipment.tracking_url ?? "",
+    shipping_fee: shipment.shipping_fee,
+    cod_amount: shipment.cod_amount,
+    note: shipment.note ?? ""
+  };
+}
+
+function trackingDraftPayload(draft: TrackingDraft): ShipmentTrackingPayload {
+  const optional = (value: string) => value.trim() || null;
+  return {
+    carrier_code: optional(draft.carrier_code),
+    carrier_name: optional(draft.carrier_name),
+    tracking_number: optional(draft.tracking_number),
+    tracking_url: optional(draft.tracking_url),
+    shipping_fee: draft.shipping_fee === null || draft.shipping_fee === "" ? null : draft.shipping_fee,
+    cod_amount: draft.cod_amount === null || draft.cod_amount === "" ? null : draft.cod_amount,
+    note: optional(draft.note)
+  };
+}
+
 export function OrderStatusBadge({ value }: { value: OrderStatus }) {
   return <Tag color={value === "confirmed" ? "green" : value === "cancelled" ? "red" : "blue"}>Order · {labelize(value)}</Tag>;
 }
@@ -495,6 +607,54 @@ function shipmentActions(shipment: Shipment): Array<{ status: ShipmentStatus; la
     return [{ status: "delivered", label: "Mark delivered" }];
   }
   return [];
+}
+
+function shipmentTrackingEditable(shipment: Shipment): boolean {
+  return ["ready", "packed", "shipped"].includes(shipment.status);
+}
+
+function ShipmentTrackingSummary({ shipment }: { shipment: Shipment }) {
+  const rows: Array<{ label: string; value: ReactNode }> = [];
+  if (shipment.carrier_code) {
+    rows.push({ label: "Carrier code", value: shipment.carrier_code });
+  }
+  if (shipment.carrier_name) {
+    rows.push({ label: "Carrier", value: shipment.carrier_name });
+  }
+  if (shipment.tracking_number) {
+    rows.push({ label: "Tracking number", value: shipment.tracking_number });
+  }
+  if (shipment.tracking_url) {
+    rows.push({
+      label: "Tracking URL",
+      value: (
+        <Typography.Link href={shipment.tracking_url} target="_blank" rel="noopener noreferrer">
+          {shipment.tracking_url}
+        </Typography.Link>
+      )
+    });
+  }
+  if (shipment.shipping_fee) {
+    rows.push({ label: "Shipping fee", value: shipment.shipping_fee });
+  }
+  if (shipment.cod_amount) {
+    rows.push({ label: "COD amount", value: shipment.cod_amount });
+  }
+  if (shipment.note) {
+    rows.push({ label: "Note", value: shipment.note });
+  }
+  if (rows.length === 0) {
+    return null;
+  }
+  return (
+    <Descriptions size="small" column={1} className="shipment-tracking-summary">
+      {rows.map((row) => (
+        <Descriptions.Item key={row.label} label={row.label}>
+          {row.value}
+        </Descriptions.Item>
+      ))}
+    </Descriptions>
+  );
 }
 
 function destinationSummary(recipient: Shipment["recipient"]): string {

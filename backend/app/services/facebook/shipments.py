@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
+from collections.abc import Mapping
 from uuid import UUID, uuid4
 
 from app.models.auth import User
@@ -21,6 +23,9 @@ from sqlalchemy.orm import Session
 
 SHIPMENT_STATUSES = {"ready", "packed", "shipped", "delivered", "cancelled"}
 ACTIVE_SHIPMENT_STATUSES = {"ready", "packed", "shipped", "delivered"}
+TRACKING_EDITABLE_STATUSES = {"ready", "packed", "shipped"}
+MONEY_QUANTUM = Decimal("0.01")
+MAX_MONEY = Decimal("9999999999.99")
 SHIPMENT_TRANSITIONS = {
     "ready": {"packed", "cancelled"},
     "packed": {"shipped", "cancelled"},
@@ -40,6 +45,7 @@ class ShipmentEventType(StrEnum):
     SHIPPED = "SHIPPED"
     DELIVERED = "DELIVERED"
     CANCELLED = "CANCELLED"
+    TRACKING_UPDATED = "TRACKING_UPDATED"
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,7 @@ def _add_event(
     *,
     from_value: str | None = None,
     to_value: str | None = None,
+    details: dict | None = None,
 ) -> None:
     session.add(
         ShipmentEvent(
@@ -118,10 +125,78 @@ def _add_event(
             event_type=event_type.value,
             from_value=from_value,
             to_value=to_value,
+            details=details,
             created_by_id=user.id,
             created_at=datetime.now(UTC),
         )
     )
+
+
+def _normalise_text(value: object) -> str | None:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
+def _money(value: Decimal | int | float | str | None) -> Decimal | None:
+    if value is None:
+        return None
+    amount = value if isinstance(value, Decimal) else Decimal(str(value))
+    if amount < 0:
+        raise ValueError("money amount must not be negative")
+    if amount > MAX_MONEY:
+        raise ValueError("money amount exceeds Numeric(12, 2) capacity")
+    return amount.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def _normalise_tracking_input(data: Mapping[str, object]) -> dict[str, object]:
+    normalized: dict[str, object] = {}
+    if "carrier_code" in data:
+        carrier_code = _normalise_text(data["carrier_code"])
+        normalized["carrier_code"] = carrier_code.lower() if carrier_code else None
+    if "carrier_name" in data:
+        normalized["carrier_name"] = _normalise_text(data["carrier_name"])
+    if "tracking_number" in data:
+        normalized["tracking_number"] = _normalise_text(data["tracking_number"])
+    if "tracking_url" in data:
+        tracking_url = _normalise_text(data["tracking_url"])
+        if tracking_url is not None and not (
+            tracking_url.startswith("http://") or tracking_url.startswith("https://")
+        ):
+            raise ValueError("tracking_url must start with http:// or https://")
+        normalized["tracking_url"] = tracking_url
+    if "shipping_fee" in data:
+        normalized["shipping_fee"] = _money(data["shipping_fee"])  # type: ignore[arg-type]
+    if "cod_amount" in data:
+        normalized["cod_amount"] = _money(data["cod_amount"])  # type: ignore[arg-type]
+    if "note" in data:
+        normalized["note"] = _normalise_text(data["note"])
+    return normalized
+
+
+def _tracking_snapshot(shipment: Shipment) -> dict[str, object]:
+    return {
+        "carrier_code": shipment.carrier_code,
+        "carrier_name": shipment.carrier_name,
+        "tracking_number": shipment.tracking_number,
+        "tracking_url": shipment.tracking_url,
+        "shipping_fee": _money(shipment.shipping_fee),
+        "cod_amount": _money(shipment.cod_amount),
+        "note": shipment.note,
+    }
+
+
+def _tracking_event_details(shipment: Shipment) -> dict[str, object | None]:
+    carrier = shipment.carrier_name or shipment.carrier_code
+    return {
+        "shipment_number": shipment.shipment_number,
+        "carrier_code": shipment.carrier_code,
+        "carrier_name": shipment.carrier_name,
+        "carrier": carrier,
+        "tracking_number": shipment.tracking_number,
+        "tracking_url": shipment.tracking_url,
+    }
 
 
 def _resolve_shipment_for_page(
@@ -270,6 +345,47 @@ def update_shipment_status(
         )
         sync_order_shipping_status(order)
         session.add_all([shipment, order])
+        session.commit()
+        session.refresh(shipment)
+        return shipment
+    except Exception:
+        session.rollback()
+        raise
+
+
+def update_shipment_tracking(
+    session: Session,
+    user: User,
+    shipment_uuid: str,
+    data: Mapping[str, object],
+) -> Shipment | None:
+    try:
+        shipment = _resolve_shipment_for_page(session, user, shipment_uuid, lock=True)
+        if shipment is None:
+            return None
+        if shipment.status not in TRACKING_EDITABLE_STATUSES:
+            raise ShipmentStateError(
+                f"Shipment tracking cannot be edited while {shipment.status}"
+            )
+
+        normalized = _normalise_tracking_input(data)
+        before = _tracking_snapshot(shipment)
+        for field, value in normalized.items():
+            setattr(shipment, field, value)
+        after = _tracking_snapshot(shipment)
+        if before == after:
+            return shipment
+
+        shipment.updated_by_id = user.id
+        shipment.updated_at = datetime.now(UTC)
+        _add_event(
+            session,
+            user,
+            shipment,
+            ShipmentEventType.TRACKING_UPDATED,
+            details=_tracking_event_details(shipment),
+        )
+        session.add(shipment)
         session.commit()
         session.refresh(shipment)
         return shipment
