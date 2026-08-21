@@ -15,6 +15,12 @@ from app.schemas.shipments import (
     ShipmentStatusUpdate,
     ShipmentTrackingUpdate,
 )
+from app.schemas.waybills import (
+    CarrierOperationListResponse,
+    CarrierOperationResponse,
+    ExternalWaybillResponse,
+    ShipmentWaybillResponse,
+)
 from app.services.facebook.shipments import (
     ShipmentStateError,
     create_shipment_for_order,
@@ -23,6 +29,7 @@ from app.services.facebook.shipments import (
     update_shipment_status,
     update_shipment_tracking,
 )
+from app.services.facebook.waybills import get_current_waybill, list_carrier_operations
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -170,3 +177,71 @@ def update_shipment_tracking_endpoint(
     if shipment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shipment not found")
     return serialize_shipment(shipment)
+
+
+@router.get("/shipments/{shipment_id}/waybill", response_model=ShipmentWaybillResponse)
+def get_shipment_waybill_endpoint(
+    shipment_id: str,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> ShipmentWaybillResponse:
+    _validate_uuid(shipment_id, detail="Shipment not found")
+    result = get_current_waybill(session, current_user, shipment_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shipment not found")
+    shipment, waybill = result
+    if waybill is None:
+        return ShipmentWaybillResponse(item=None)
+    return ShipmentWaybillResponse(
+        item=ExternalWaybillResponse(
+            uuid=str(waybill.public_id),
+            shipment_uuid=str(shipment.public_id),
+            provider_code=waybill.provider_code,
+            carrier_account_uuid=str(waybill.account_public_id_snapshot),
+            carrier_account_display_name=waybill.account_display_name_snapshot,
+            external_id=waybill.external_id,
+            tracking_number=waybill.tracking_number,
+            tracking_url=waybill.tracking_url,
+            status=waybill.status,
+            created_at=waybill.created_at,
+            updated_at=waybill.updated_at,
+            cancelled_at=waybill.cancelled_at,
+        )
+    )
+
+
+@router.get(
+    "/shipments/{shipment_id}/carrier-operations",
+    response_model=CarrierOperationListResponse,
+)
+def list_shipment_carrier_operations_endpoint(
+    shipment_id: str,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> CarrierOperationListResponse:
+    _validate_uuid(shipment_id, detail="Shipment not found")
+    result = list_carrier_operations(session, current_user, shipment_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shipment not found")
+    shipment, operations = result
+    return CarrierOperationListResponse(
+        items=[
+            CarrierOperationResponse(
+                uuid=str(operation.public_id),
+                shipment_uuid=str(shipment.public_id),
+                waybill_uuid=(str(operation.waybill.public_id) if operation.waybill else None),
+                provider_code=operation.provider_code,
+                carrier_account_uuid=str(operation.account_public_id_snapshot),
+                carrier_account_display_name=operation.account_display_name_snapshot,
+                operation_type=operation.operation_type,
+                status=operation.status,
+                error_code=operation.error_code,
+                error_message=operation.error_message,
+                created_at=operation.created_at,
+                started_at=operation.started_at,
+                completed_at=operation.completed_at,
+                updated_at=operation.updated_at,
+            )
+            for operation in operations
+        ]
+    )

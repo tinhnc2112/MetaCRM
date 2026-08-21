@@ -3,7 +3,7 @@
 from app.db.base import Base
 from app.models.auth import Role, User, user_roles
 from app.models.base import AuditMixin, BaseModel, SoftDeleteMixin, UTCDateTimeMixin, UUIDMixin
-from app.models.carriers import CarrierAccount
+from app.models.carriers import CarrierAccount, CarrierOperation, ExternalWaybill
 from app.models.customer_core import Customer, CustomerIdentity
 from app.models.customers import (
     CustomerMerge,
@@ -26,6 +26,8 @@ __all__ = [
     "Base",
     "BaseModel",
     "CarrierAccount",
+    "CarrierOperation",
+    "ExternalWaybill",
     "Conversation",
     "Customer",
     "CustomerIdentity",

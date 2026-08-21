@@ -3,20 +3,19 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from app.db.base import Base
 from app.models.base import utc_now
-from decimal import Decimal
-
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     Numeric,
     String,
     Text,
@@ -26,7 +25,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 if TYPE_CHECKING:
     from app.models.auth import User
-    from app.models.carriers import CarrierAccount
+    from app.models.carriers import CarrierAccount, CarrierOperation, ExternalWaybill
     from app.models.orders import Order
 
 
@@ -44,6 +43,11 @@ class Shipment(Base):
         Index("ix_shipments_order_created", "order_id", "created_at"),
         Index("ix_shipments_status", "status"),
         Index("ix_shipments_carrier_account_id", "carrier_account_id"),
+        Index(
+            "ix_shipments_current_external_waybill_id",
+            "current_external_waybill_id",
+            unique=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -53,6 +57,9 @@ class Shipment(Base):
     )
     carrier_account_id: Mapped[int | None] = mapped_column(
         ForeignKey("carrier_accounts.id", ondelete="SET NULL"), nullable=True
+    )
+    current_external_waybill_id: Mapped[int | None] = mapped_column(
+        ForeignKey("external_waybills.id", ondelete="SET NULL"), nullable=True
     )
     shipment_number: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready")
@@ -96,6 +103,17 @@ class Shipment(Base):
     updated_by: Mapped[User | None] = relationship(foreign_keys=[updated_by_id])
     events: Mapped[list[ShipmentEvent]] = relationship(
         back_populates="shipment", order_by="ShipmentEvent.id", lazy="selectin"
+    )
+    external_waybills: Mapped[list[ExternalWaybill]] = relationship(
+        back_populates="shipment",
+        foreign_keys="ExternalWaybill.shipment_id",
+        order_by="ExternalWaybill.id",
+    )
+    current_external_waybill: Mapped[ExternalWaybill | None] = relationship(
+        foreign_keys=[current_external_waybill_id], post_update=True
+    )
+    carrier_operations: Mapped[list[CarrierOperation]] = relationship(
+        back_populates="shipment", order_by="CarrierOperation.id"
     )
 
 

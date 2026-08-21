@@ -4,6 +4,8 @@ import type { ReactNode } from "react";
 
 import { OrderActivityTimeline } from "./OrderActivityTimeline";
 import type {
+  CarrierOperation,
+  ExternalWaybill,
   OrderResponse,
   OrderStatus,
   OrderTimelineItem,
@@ -40,6 +42,10 @@ type OrderOperationsDetailProps = {
   shipments: Shipment[];
   shipmentsLoading: boolean;
   shipmentsError: string | null;
+  waybillsByShipment: Record<string, ExternalWaybill | null>;
+  carrierOperationsByShipment: Record<string, CarrierOperation[]>;
+  waybillLoadingByShipment: Record<string, boolean>;
+  waybillErrorByShipment: Record<string, string | null>;
   activityItems: OrderTimelineItem[];
   activityLoading: boolean;
   activityError: string | null;
@@ -47,6 +53,7 @@ type OrderOperationsDetailProps = {
   onClose: () => void;
   onRetry: () => void;
   onRetryShipments: () => void;
+  onRetryWaybill: (shipmentUuid: string) => void;
   onRetryActivity: () => void;
   onOpenCustomer: (customerUuid: string) => void;
   onUpdate: (payload: OrderUpdatePayload) => void;
@@ -66,6 +73,10 @@ export function OrderOperationsDetail({
   shipments,
   shipmentsLoading,
   shipmentsError,
+  waybillsByShipment,
+  carrierOperationsByShipment,
+  waybillLoadingByShipment,
+  waybillErrorByShipment,
   activityItems,
   activityLoading,
   activityError,
@@ -73,6 +84,7 @@ export function OrderOperationsDetail({
   onClose,
   onRetry,
   onRetryShipments,
+  onRetryWaybill,
   onRetryActivity,
   onOpenCustomer,
   onUpdate,
@@ -382,6 +394,13 @@ export function OrderOperationsDetail({
                             Created {formatTimestamp(shipment.created_at)}
                           </Typography.Text>
                           <ShipmentTrackingSummary shipment={shipment} />
+                          <ExternalWaybillSummary
+                            waybill={waybillsByShipment[shipment.uuid] ?? null}
+                            operations={carrierOperationsByShipment[shipment.uuid] ?? []}
+                            loading={waybillLoadingByShipment[shipment.uuid] ?? false}
+                            error={waybillErrorByShipment[shipment.uuid] ?? null}
+                            onRetry={() => onRetryWaybill(shipment.uuid)}
+                          />
                         </Space>
                       }
                     />
@@ -668,6 +687,62 @@ function ShipmentTrackingSummary({ shipment }: { shipment: Shipment }) {
         </Descriptions.Item>
       ))}
     </Descriptions>
+  );
+}
+
+function ExternalWaybillSummary({
+  waybill,
+  operations,
+  loading,
+  error,
+  onRetry
+}: {
+  waybill: ExternalWaybill | null;
+  operations: CarrierOperation[];
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  if (loading) {
+    return <Spin size="small" />;
+  }
+  if (error) {
+    return (
+      <Alert
+        type="warning"
+        showIcon
+        message="External waybill data is unavailable."
+        description={error}
+        action={<Button size="small" onClick={onRetry}>Retry</Button>}
+      />
+    );
+  }
+  if (!waybill) {
+    return null;
+  }
+  const safeTrackingUrl = waybill.tracking_url ? httpTrackingUrl(waybill.tracking_url) : null;
+  const latestOperation = operations.at(-1) ?? null;
+  return (
+    <section aria-label="External waybill">
+      <Typography.Text strong>External waybill</Typography.Text>
+      <Descriptions size="small" column={1}>
+        <Descriptions.Item label="Provider">{waybill.provider_code}</Descriptions.Item>
+        <Descriptions.Item label="Carrier account">{waybill.carrier_account_display_name}</Descriptions.Item>
+        <Descriptions.Item label="Waybill code">{waybill.external_id}</Descriptions.Item>
+        <Descriptions.Item label="Tracking">
+          {waybill.tracking_number ?? "Not provided"}
+          {safeTrackingUrl ? (
+            <> · <Typography.Link href={safeTrackingUrl} target="_blank" rel="noopener noreferrer">Open tracking</Typography.Link></>
+          ) : waybill.tracking_url ? <> · {waybill.tracking_url}</> : null}
+        </Descriptions.Item>
+        <Descriptions.Item label="Integration status">
+          <Space wrap>
+            <Tag>{labelize(waybill.status)}</Tag>
+            {latestOperation ? <Tag>{labelize(latestOperation.status)}</Tag> : null}
+          </Space>
+        </Descriptions.Item>
+      </Descriptions>
+    </section>
   );
 }
 

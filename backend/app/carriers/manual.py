@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from app.carriers.base import CarrierCapabilities
+from app.carriers.base import (
+    CancelWaybillRequest,
+    CarrierCapabilities,
+    CarrierOperationUnsupportedError,
+    CreateWaybillRequest,
+    WaybillResult,
+)
 
 
 class ManualCarrierProvider:
@@ -23,6 +29,14 @@ class ManualCarrierProvider:
     def validate_configuration(self, configuration: Mapping[str, object]) -> None:
         if not isinstance(configuration, Mapping):
             raise ValueError("configuration must be an object")
+
+    def create_waybill(self, request: CreateWaybillRequest) -> WaybillResult:
+        del request
+        raise CarrierOperationUnsupportedError("Manual carrier does not support waybills")
+
+    def cancel_waybill(self, request: CancelWaybillRequest) -> WaybillResult:
+        del request
+        raise CarrierOperationUnsupportedError("Manual carrier does not support waybills")
 
 
 manual_provider = ManualCarrierProvider()

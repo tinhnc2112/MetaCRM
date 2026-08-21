@@ -1,5 +1,5 @@
 import { EyeOutlined, SearchOutlined, ShoppingCartOutlined } from "@ant-design/icons";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, App, Button, Empty, Input, Pagination, Select, Space, Spin, Table, Tag, Typography } from "antd";
 import type { TableColumnsType } from "antd";
 import { useEffect, useRef, useState } from "react";
@@ -17,7 +17,9 @@ import {
   getOrder,
   getOrderOperationalSummary,
   getOrderTimeline,
+  getShipmentWaybill,
   listOrderShipments,
+  listShipmentCarrierOperations,
   listOrders,
   updateOrder,
   updateOrderShippingDestination,
@@ -139,6 +141,39 @@ export function OrderOperationsPage() {
     queryFn: () => listOrderShipments(selectedOrderUuid as string),
     enabled: Boolean(currentPageId && selectedOrderUuid)
   });
+  const shipmentItems = shipmentsQuery.data?.items ?? [];
+  const waybillQueries = useQueries({
+    queries: shipmentItems.map((shipment) => ({
+      queryKey: ["shipment-waybill", currentPageId, selectedOrderUuid, shipment.uuid],
+      queryFn: () => getShipmentWaybill(shipment.uuid),
+      enabled: Boolean(currentPageId && selectedOrderUuid)
+    }))
+  });
+  const carrierOperationQueries = useQueries({
+    queries: shipmentItems.map((shipment) => ({
+      queryKey: ["shipment-carrier-operations", currentPageId, selectedOrderUuid, shipment.uuid],
+      queryFn: () => listShipmentCarrierOperations(shipment.uuid),
+      enabled: Boolean(currentPageId && selectedOrderUuid)
+    }))
+  });
+  const waybillsByShipment = Object.fromEntries(
+    shipmentItems.map((shipment, index) => [shipment.uuid, waybillQueries[index]?.data?.item ?? null])
+  );
+  const carrierOperationsByShipment = Object.fromEntries(
+    shipmentItems.map((shipment, index) => [shipment.uuid, carrierOperationQueries[index]?.data?.items ?? []])
+  );
+  const waybillLoadingByShipment = Object.fromEntries(
+    shipmentItems.map((shipment, index) => [
+      shipment.uuid,
+      Boolean(waybillQueries[index]?.isLoading || carrierOperationQueries[index]?.isLoading)
+    ])
+  );
+  const waybillErrorByShipment = Object.fromEntries(
+    shipmentItems.map((shipment, index) => {
+      const error = waybillQueries[index]?.error ?? carrierOperationQueries[index]?.error;
+      return [shipment.uuid, error ? getReadableOrderError(error) : null];
+    })
+  );
 
   const updateMutation = useMutation({
     mutationFn: ({ orderUuid, payload }: UpdateVariables) => updateOrder(orderUuid, payload),
@@ -553,9 +588,13 @@ export function OrderOperationsPage() {
         loading={detailQuery.isLoading}
         loadError={detailQuery.isError ? getReadableOrderError(detailQuery.error) : null}
         operationError={operationError}
-        shipments={shipmentsQuery.data?.items ?? []}
+        shipments={shipmentItems}
         shipmentsLoading={shipmentsQuery.isLoading}
         shipmentsError={shipmentsQuery.isError ? getReadableOrderError(shipmentsQuery.error) : null}
+        waybillsByShipment={waybillsByShipment}
+        carrierOperationsByShipment={carrierOperationsByShipment}
+        waybillLoadingByShipment={waybillLoadingByShipment}
+        waybillErrorByShipment={waybillErrorByShipment}
         activityItems={timelineQuery.data?.items ?? []}
         activityLoading={timelineQuery.isLoading}
         activityError={timelineQuery.isError ? getReadableOrderError(timelineQuery.error) : null}
@@ -563,6 +602,15 @@ export function OrderOperationsPage() {
         onClose={() => { setSelectedOrderUuid(null); setOperationError(null); }}
         onRetry={() => void detailQuery.refetch()}
         onRetryShipments={() => void shipmentsQuery.refetch()}
+        onRetryWaybill={(shipmentUuid) => {
+          const index = shipmentItems.findIndex((shipment) => shipment.uuid === shipmentUuid);
+          if (index >= 0) {
+            void Promise.all([
+              waybillQueries[index].refetch(),
+              carrierOperationQueries[index].refetch()
+            ]);
+          }
+        }}
         onRetryActivity={() => void timelineQuery.refetch()}
         onOpenCustomer={(customerUuid) => navigate(`/customers/${encodeURIComponent(customerUuid)}`)}
         onUpdate={submitUpdate}

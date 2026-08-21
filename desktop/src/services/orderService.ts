@@ -1,5 +1,6 @@
 import { apiClient } from "./apiClient";
 import type {
+  CarrierOperationListResponse,
   CustomerOrderSummary,
   OrderCreatePayload,
   OrderListFilters,
@@ -12,6 +13,7 @@ import type {
   Shipment,
   ShipmentListResponse,
   ShipmentStatus,
+  ShipmentWaybillResponse,
   ShipmentTrackingPayload,
   ShippingDestinationInput
 } from "../types/order";
@@ -117,6 +119,22 @@ export async function listOrderShipments(orderUuid: string): Promise<ShipmentLis
 export async function createOrderShipment(orderUuid: string): Promise<Shipment> {
   const response = await apiClient.post<Shipment>(
     `/api/v1/facebook/orders/${encodeURIComponent(orderUuid)}/shipments`
+  );
+  return response.data;
+}
+
+export async function getShipmentWaybill(shipmentUuid: string): Promise<ShipmentWaybillResponse> {
+  const response = await apiClient.get<ShipmentWaybillResponse>(
+    `/api/v1/facebook/shipments/${encodeURIComponent(shipmentUuid)}/waybill`
+  );
+  return response.data;
+}
+
+export async function listShipmentCarrierOperations(
+  shipmentUuid: string
+): Promise<CarrierOperationListResponse> {
+  const response = await apiClient.get<CarrierOperationListResponse>(
+    `/api/v1/facebook/shipments/${encodeURIComponent(shipmentUuid)}/carrier-operations`
   );
   return response.data;
 }

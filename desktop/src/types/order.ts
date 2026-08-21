@@ -88,6 +88,9 @@ export type Shipment = {
   shipment_number: string;
   status: ShipmentStatus;
   recipient: ShipmentRecipient;
+  carrier_account_uuid: string | null;
+  carrier_provider_code: string | null;
+  carrier_account_display_name: string | null;
   carrier_code: string | null;
   carrier_name: string | null;
   tracking_number: string | null;
@@ -115,6 +118,50 @@ export type ShipmentTrackingPayload = {
 
 export type ShipmentListResponse = {
   items: Shipment[];
+};
+
+export type WaybillStatus = "created" | "cancelled" | "unknown";
+export type CarrierOperationType = "CREATE_WAYBILL" | "CANCEL_WAYBILL";
+export type CarrierOperationStatus = "pending" | "succeeded" | "failed" | "unknown";
+
+export type ExternalWaybill = {
+  uuid: string;
+  shipment_uuid: string;
+  provider_code: string;
+  carrier_account_uuid: string;
+  carrier_account_display_name: string;
+  external_id: string;
+  tracking_number: string | null;
+  tracking_url: string | null;
+  status: WaybillStatus;
+  created_at: string;
+  updated_at: string;
+  cancelled_at: string | null;
+};
+
+export type ShipmentWaybillResponse = {
+  item: ExternalWaybill | null;
+};
+
+export type CarrierOperation = {
+  uuid: string;
+  shipment_uuid: string;
+  waybill_uuid: string | null;
+  provider_code: string;
+  carrier_account_uuid: string;
+  carrier_account_display_name: string;
+  operation_type: CarrierOperationType;
+  status: CarrierOperationStatus;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+};
+
+export type CarrierOperationListResponse = {
+  items: CarrierOperation[];
 };
 
 export type OrderCreatePayload = {
