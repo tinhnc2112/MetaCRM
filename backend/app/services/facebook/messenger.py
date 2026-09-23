@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import hmac
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,11 +12,11 @@ from typing import Any
 from app.models.facebook import FacebookPage
 from app.models.messenger import Conversation, Message
 from app.services.customer_identity import resolve_customer_for_conversation
-from app.services.facebook.client import FacebookGraphClient
-from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.exceptions import FacebookIntegrationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Signature verification
@@ -54,12 +55,33 @@ class RawMessageEvent:
 
     page_id: str          # the recipient Page ID (sender in page-scoped events)
     psid: str             # Page-scoped user ID of the end-user
-    mid: str | None       # Facebook message ID (None for read receipts without mid)
-    event_type: str       # "message" | "postback" | "read"
+    mid: str | None       # Facebook message ID (None for non-message events without mid)
+    event_type: str       # "message" | "postback"
     is_from_page: bool    # True if the Page sent the message (echo)
     text: str | None
     postback_payload: str | None
     fb_timestamp_ms: int | None
+
+
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_webhook_payload(payload: dict[str, Any]) -> list[RawMessageEvent]:
@@ -67,83 +89,160 @@ def parse_webhook_payload(payload: dict[str, Any]) -> list[RawMessageEvent]:
 
     Facebook delivers one or more ``entry`` objects, each containing one or
     more ``messaging`` items.  We normalise them into a flat list of
-    ``RawMessageEvent`` objects, skipping any entries we cannot parse.
+    ``RawMessageEvent`` objects, skipping unsupported delivery/read events
+    while logging why they were ignored.
     """
     events: list[RawMessageEvent] = []
 
-    for entry in payload.get("entry", []):
-        page_id = str(entry.get("id", ""))
-        for item in entry.get("messaging", []):
-            sender = item.get("sender", {})
-            recipient = item.get("recipient", {})
-            psid = str(sender.get("id", ""))
-            page_sender_id = str(recipient.get("id", ""))
-            fb_ts = item.get("timestamp")
+    for entry in _as_list(payload.get("entry")):
+        if not isinstance(entry, dict):
+            logger.info("facebook webhook ignored event_type=entry reason=non_object_entry")
+            continue
 
-            if not psid or not page_id:
+        entry_id = str(entry.get("id") or "")
+        messaging_items = _as_list(entry.get("messaging"))
+        logger.info(
+            "facebook webhook entry parsed entry_id=%s page_id=%s messaging_count=%d",
+            entry_id or "",
+            entry_id or "",
+            len(messaging_items),
+        )
+
+        for item in messaging_items:
+            if not isinstance(item, dict):
+                logger.info(
+                    "facebook webhook ignored event_type=messaging reason=non_object_item entry_id=%s",
+                    entry_id or "",
+                )
+                continue
+
+            sender = _as_dict(item.get("sender"))
+            recipient = _as_dict(item.get("recipient"))
+            psid = str(sender.get("id", ""))
+            recipient_id = str(recipient.get("id", ""))
+            fb_ts = _coerce_int(item.get("timestamp"))
+
+            if not psid or not entry_id:
+                logger.info(
+                    "facebook webhook ignored event_type=messaging reason=missing_sender_or_entry entry_id=%s recipient_id=%s",
+                    entry_id or "",
+                    recipient_id or "",
+                )
                 continue
 
             # ── plain message (including page echo) ──────────────────────────
             if "message" in item:
                 msg = item["message"]
-                # Skip delivery / read echo objects that have no mid
-                mid = msg.get("mid")
-                if not mid:
+                if not isinstance(msg, dict):
+                    logger.info(
+                        "facebook webhook ignored event_type=message reason=non_object_message entry_id=%s recipient_id=%s",
+                        entry_id or "",
+                        recipient_id or "",
+                    )
                     continue
+
+                mid = msg.get("mid")
+                text = msg.get("text")
                 is_echo = bool(msg.get("is_echo", False))
+                logger.info(
+                    "facebook webhook messaging item event_type=message entry_id=%s page_id=%s recipient_id=%s sender_id=%s mid=%s message_text_present=%s is_echo=%s",
+                    entry_id or "",
+                    entry_id or "",
+                    recipient_id or "",
+                    psid,
+                    mid or "",
+                    text is not None,
+                    is_echo,
+                )
+                if not mid:
+                    logger.info(
+                        "facebook webhook ignored event_type=message reason=missing_mid entry_id=%s recipient_id=%s sender_id=%s",
+                        entry_id or "",
+                        recipient_id or "",
+                        psid,
+                    )
+                    continue
                 # When is_echo, the *sender* is the Page; psid is the customer
                 if is_echo:
                     actual_psid = str(recipient.get("id", psid))
-                    actual_page_id = str(sender.get("id", page_id))
+                    actual_page_id = str(sender.get("id", entry_id))
                 else:
                     actual_psid = psid
-                    actual_page_id = page_sender_id or page_id
+                    actual_page_id = recipient_id or entry_id
                 events.append(
                     RawMessageEvent(
-                        page_id=actual_page_id or page_id,
+                        page_id=actual_page_id or entry_id,
                         psid=actual_psid,
                         mid=mid,
                         event_type="message",
                         is_from_page=is_echo,
-                        text=msg.get("text"),
+                        text=text if isinstance(text, str) or text is None else str(text),
                         postback_payload=None,
-                        fb_timestamp_ms=int(fb_ts) if fb_ts is not None else None,
+                        fb_timestamp_ms=fb_ts,
                     )
                 )
 
             # ── postback ─────────────────────────────────────────────────────
             elif "postback" in item:
                 postback = item["postback"]
-                mid = postback.get("mid") or f"postback-{page_id}-{psid}-{fb_ts}"
+                if not isinstance(postback, dict):
+                    logger.info(
+                        "facebook webhook ignored event_type=postback reason=non_object_postback entry_id=%s recipient_id=%s",
+                        entry_id or "",
+                        recipient_id or "",
+                    )
+                    continue
+                mid = postback.get("mid") or f"postback-{entry_id}-{psid}-{fb_ts}"
+                postback_title = postback.get("title")
+                postback_payload = postback.get("payload")
+                logger.info(
+                    "facebook webhook messaging item event_type=postback entry_id=%s page_id=%s recipient_id=%s sender_id=%s mid=%s text_present=%s",
+                    entry_id or "",
+                    entry_id or "",
+                    recipient_id or "",
+                    psid,
+                    mid,
+                    postback_title is not None,
+                )
                 events.append(
                     RawMessageEvent(
-                        page_id=page_sender_id or page_id,
+                        page_id=recipient_id or entry_id,
                         psid=psid,
                         mid=mid,
                         event_type="postback",
                         is_from_page=False,
-                        text=postback.get("title"),
-                        postback_payload=postback.get("payload"),
-                        fb_timestamp_ms=int(fb_ts) if fb_ts is not None else None,
+                        text=postback_title if isinstance(postback_title, str) or postback_title is None else str(postback_title),
+                        postback_payload=postback_payload if isinstance(postback_payload, str) or postback_payload is None else str(postback_payload),
+                        fb_timestamp_ms=fb_ts,
                     )
                 )
 
             # ── read receipt ─────────────────────────────────────────────────
             elif "read" in item:
-                # Read receipts have no mid; we synthesise a stable key
-                watermark = item["read"].get("watermark", fb_ts or 0)
-                mid = f"read-{page_id}-{psid}-{watermark}"
-                events.append(
-                    RawMessageEvent(
-                        page_id=page_sender_id or page_id,
-                        psid=psid,
-                        mid=mid,
-                        event_type="read",
-                        is_from_page=False,
-                        text=None,
-                        postback_payload=None,
-                        fb_timestamp_ms=int(fb_ts) if fb_ts is not None else None,
-                    )
+                logger.info(
+                    "facebook webhook ignored event_type=read reason=unsupported entry_id=%s recipient_id=%s sender_id=%s",
+                    entry_id or "",
+                    recipient_id or "",
+                    psid,
+                )
+                continue
+
+            elif "delivery" in item:
+                logger.info(
+                    "facebook webhook ignored event_type=delivery reason=unsupported entry_id=%s recipient_id=%s sender_id=%s",
+                    entry_id or "",
+                    recipient_id or "",
+                    psid,
+                )
+                continue
+
+            else:
+                logger.info(
+                    "facebook webhook ignored event_type=unknown reason=unsupported_payload entry_id=%s recipient_id=%s sender_id=%s keys=%s",
+                    entry_id or "",
+                    recipient_id or "",
+                    psid,
+                    sorted(item.keys()),
                 )
 
     return events
@@ -175,58 +274,6 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
         return dt.replace(tzinfo=UTC)
     # Already aware — convert to UTC in case it carries a different zone
     return dt.astimezone(UTC)
-
-
-def _fetch_customer_profile(
-    facebook_page: FacebookPage, psid: str
-) -> tuple[str | None, str | None]:
-    encrypted_token = facebook_page.access_token_encrypted
-    if not encrypted_token and facebook_page.facebook_account is not None:
-        encrypted_token = facebook_page.facebook_account.access_token_encrypted
-
-    access_token = TokenCipher().decrypt(encrypted_token or "")
-    client = FacebookGraphClient()
-    response = client.get(
-        f"{psid}",
-        params={"fields": "name,picture.type(large)"},
-        access_token=access_token,
-    )
-
-    customer_name = response.get("name")
-    picture = response.get("picture", {})
-    picture_data = picture.get("data", {}) if isinstance(picture, dict) else {}
-    customer_avatar_url = picture_data.get("url") if isinstance(picture_data, dict) else None
-    return (
-        str(customer_name) if customer_name else None,
-        str(customer_avatar_url) if customer_avatar_url else None,
-    )
-
-
-def hydrate_conversation_identity(
-    session: Session,
-    conversation: Conversation,
-    facebook_page: FacebookPage,
-) -> None:
-    if conversation.customer_name and conversation.customer_avatar_url:
-        return
-
-    try:
-        customer_name, customer_avatar_url = _fetch_customer_profile(
-            facebook_page, conversation.psid
-        )
-    except FacebookIntegrationError:
-        return
-
-    updated = False
-    if customer_name and not conversation.customer_name:
-        conversation.customer_name = customer_name
-        updated = True
-    if customer_avatar_url and not conversation.customer_avatar_url:
-        conversation.customer_avatar_url = customer_avatar_url
-        updated = True
-    if updated:
-        session.add(conversation)
-        session.flush()
 
 
 def find_page_by_page_id(session: Session, page_id: str) -> FacebookPage | None:
@@ -313,6 +360,13 @@ def upsert_message(
         .first()
     )
     if existing is not None:
+        logger.info(
+            "facebook webhook ignored event_type=%s reason=duplicate_mid page_id=%s psid=%s mid=%s",
+            event.event_type,
+            conversation.page_id,
+            conversation.psid,
+            event.mid,
+        )
         return existing, False
 
     sent_at = _ts_to_utc(event.fb_timestamp_ms)
@@ -336,21 +390,27 @@ def process_webhook_events(
 ) -> list[tuple[Conversation, Message, bool]]:
     """Persist all events; return list of (conversation, message, was_created).
 
-    Events whose page_id does not correspond to a known FacebookPage are silently
-    skipped — Facebook may deliver events for Pages that have since been
-    disconnected.  Events with duplicate ``mid`` values are deduplicated by
-    ``upsert_message`` (idempotent).
+    Events whose page_id does not correspond to a known FacebookPage are
+    logged and skipped — Facebook may deliver events for Pages that have since
+    been disconnected.  Events with duplicate ``mid`` values are deduplicated
+    by ``upsert_message`` (idempotent).
     """
     results: list[tuple[Conversation, Message, bool]] = []
 
     for event in events:
         page = find_page_by_page_id(session, event.page_id)
         if page is None:
+            logger.info(
+                "facebook webhook ignored event_type=%s reason=unknown_page page_id=%s psid=%s mid=%s",
+                event.event_type,
+                event.page_id,
+                event.psid,
+                event.mid,
+            )
             continue  # unknown / disconnected Page — skip silently
 
         event_ts = _ts_to_utc(event.fb_timestamp_ms)
         conversation = upsert_conversation(session, page, event.psid, event_ts)
-        hydrate_conversation_identity(session, conversation, page)
         message, created = upsert_message(session, conversation, event)
         results.append((conversation, message, created))
 

@@ -6,7 +6,17 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from app.db.base import Base
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
@@ -45,6 +55,10 @@ class FacebookPage(Base):
     __table_args__ = (
         UniqueConstraint("page_id", name="uq_facebook_pages_page_id"),
         Index("ix_facebook_pages_page_id", "page_id"),
+        CheckConstraint(
+            "webhook_subscription_status IN ('pending', 'subscribed', 'failed')",
+            name="ck_facebook_pages_webhook_subscription_status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -60,6 +74,21 @@ class FacebookPage(Base):
     token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    webhook_subscription_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending"
+    )
+    webhook_subscription_attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    webhook_subscription_last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    webhook_subscribed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    webhook_subscription_last_error: Mapped[str | None] = mapped_column(
+        String(1000), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now

@@ -4,6 +4,7 @@ from app.api.router import api_router
 from app.api.version import router as version_router
 from app.core.config import get_settings
 from app.middleware.exceptions import register_exception_handlers
+from app.middleware.routing import ASGIIngressLoggingMiddleware
 from app.startup.lifecycle import lifespan
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +37,7 @@ def create_app() -> FastAPI:
             "Idempotency-Key",
         ],
     )
+    application.add_middleware(ASGIIngressLoggingMiddleware)
     application.include_router(api_router)
     application.include_router(version_router)
     register_exception_handlers(application)

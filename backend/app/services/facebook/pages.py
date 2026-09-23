@@ -11,6 +11,7 @@ from app.services.facebook.auth import FacebookToken, FacebookUserInfo
 from app.services.facebook.client import FacebookGraphClient
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.exceptions import FacebookPageUnavailableError
+from app.services.facebook.subscriptions import subscribe_active_pages_to_messenger_webhooks
 from sqlalchemy.orm import Session
 
 
@@ -118,6 +119,21 @@ def sync_facebook_pages(
     session.commit()
     for page in synced_pages:
         session.refresh(page)
+
+    active_pages = (
+        session.query(FacebookPage)
+        .filter(
+            FacebookPage.facebook_account_id == account.id,
+            FacebookPage.is_active.is_(True),
+            FacebookPage.deleted_at.is_(None),
+        )
+        .all()
+    )
+    subscribe_active_pages_to_messenger_webhooks(
+        session,
+        active_pages,
+        cipher=token_cipher,
+    )
     return synced_pages
 
 

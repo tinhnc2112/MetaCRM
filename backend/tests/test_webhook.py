@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -14,12 +15,12 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
+from app.middleware.routing import FACEBOOK_WEBHOOK_PATH
 from app.models.auth import User
 from app.models.customer_core import Customer, CustomerIdentity
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation, Message
 from app.services.facebook.crypto import TokenCipher
-from app.services.facebook.exceptions import FacebookApiError
 from app.services.facebook.messenger import (
     FacebookWebhookSignatureError,
     RawMessageEvent,
@@ -45,6 +46,17 @@ from sqlalchemy.pool import StaticPool
 TEST_TOKEN_KEY = "test-facebook-token-encryption-key"
 TEST_APP_SECRET = "test-app-secret"
 TEST_VERIFY_TOKEN = "test-verify-token"
+
+
+def test_facebook_webhook_post_route_is_registered() -> None:
+    matching_routes = [
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == FACEBOOK_WEBHOOK_PATH
+        and "POST" in (getattr(route, "methods", set()) or set())
+    ]
+
+    assert len(matching_routes) == 1
 
 
 @pytest.fixture()
@@ -565,74 +577,6 @@ def test_process_webhook_events_skips_unknown_page(session: Session) -> None:
     assert session.query(Conversation).count() == 0
 
 
-def test_profile_lookup_persists_identity_on_first_message(
-    session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def fake_get(self, path: str, params: dict[str, object] | None = None, access_token: str | None = None):
-        return {
-            "name": "Customer One",
-            "picture": {"data": {"url": "https://example.com/customer.png"}},
-        }
-
-    monkeypatch.setattr("app.services.facebook.messenger.FacebookGraphClient.get", fake_get)
-
-    page = session.query(FacebookPage).filter(FacebookPage.page_id == "page-111").one()
-    events = parse_webhook_payload(_message_payload(psid="psid-profile-1"))
-    results = process_webhook_events(session, events)
-
-    assert len(results) == 1
-    conversation = session.query(Conversation).one()
-    assert conversation.customer_name == "Customer One"
-    assert conversation.customer_avatar_url == "https://example.com/customer.png"
-
-
-def test_profile_lookup_failure_does_not_block_message_persistence(
-    session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def fake_get(self, path: str, params: dict[str, object] | None = None, access_token: str | None = None):
-        raise FacebookApiError("profile lookup failed")
-
-    monkeypatch.setattr("app.services.facebook.messenger.FacebookGraphClient.get", fake_get)
-
-    events = parse_webhook_payload(_message_payload(psid="psid-profile-2"))
-    results = process_webhook_events(session, events)
-
-    assert len(results) == 1
-    assert session.query(Conversation).count() == 1
-    assert session.query(Message).count() == 1
-
-
-def test_existing_identity_is_not_refetched(
-    session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[tuple[str, dict[str, object] | None, str | None]] = []
-
-    def fake_get(self, path: str, params: dict[str, object] | None = None, access_token: str | None = None):
-        calls.append((path, params, access_token))
-        return {
-            "name": "Customer Two",
-            "picture": {"data": {"url": "https://example.com/customer-2.png"}},
-        }
-
-    monkeypatch.setattr("app.services.facebook.messenger.FacebookGraphClient.get", fake_get)
-
-    page = session.query(FacebookPage).filter(FacebookPage.page_id == "page-111").one()
-    conversation = Conversation(
-        facebook_page_id=page.id,
-        page_id=page.page_id,
-        psid="psid-profile-3",
-        customer_name="Already Known",
-        customer_avatar_url="https://example.com/already-known.png",
-    )
-    session.add(conversation)
-    session.commit()
-
-    events = parse_webhook_payload(_message_payload(psid="psid-profile-3", mid="mid-profile-3"))
-    process_webhook_events(session, events)
-
-    assert calls == []
-
-
 # ---------------------------------------------------------------------------
 # Integration tests — HTTP endpoint
 # ---------------------------------------------------------------------------
@@ -704,12 +648,15 @@ class TestWebhookReceive:
         response = self._post(client, _message_payload())
         assert response.status_code == 200
         assert response.json()["events_processed"] == 1
+        assert session.query(Customer).count() == 1
         assert session.query(Conversation).count() == 1
         assert session.query(Message).count() == 1
         msg = session.query(Message).one()
         assert msg.mid == "m_abc123"
         assert msg.text == "Hello"
         assert msg.event_type == "message"
+        conversation = session.query(Conversation).one()
+        assert conversation.customer_id is not None
 
     def test_duplicate_event_is_idempotent(
         self, client: TestClient, session: Session
@@ -718,7 +665,6 @@ class TestWebhookReceive:
         self._post(client, payload)
         response = self._post(client, payload)
         assert response.status_code == 200
-        # Second call: event_processed=1 because upsert returns existing, was_created=False
         assert session.query(Message).count() == 1  # still only one message
 
     def test_same_psid_on_different_pages_creates_isolated_customers(
@@ -753,7 +699,12 @@ class TestWebhookReceive:
         assert len(identities) == 2
         assert identities[0].facebook_page_id != identities[1].facebook_page_id
 
-    def test_invalid_signature_returns_403(self, client: TestClient) -> None:
+    def test_invalid_signature_returns_403_with_diagnostic_log(
+        self,
+        client: TestClient,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.INFO, logger="app.api.webhook")
         body = json.dumps(_message_payload()).encode()
         response = client.post(
             "/api/v1/facebook/webhook",
@@ -761,9 +712,46 @@ class TestWebhookReceive:
             headers={
                 "Content-Type": "application/json",
                 "X-Hub-Signature-256": "sha256=deadbeefdeadbeef",
+                "X-Request-ID": "webhook-debug-test",
             },
         )
         assert response.status_code == 403
+        assert "facebook webhook POST received" in caplog.text
+        assert "request_id=webhook-debug-test" in caplog.text
+        assert "signature_present=True" in caplog.text
+        assert "body_length=" in caplog.text
+        assert "X-Hub-Signature-256 does not match payload" in caplog.text
+        assert "deadbeefdeadbeef" not in caplog.text
+
+    def test_webhook_selftest_logs_same_ingress_diagnostics(
+        self,
+        client: TestClient,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.INFO, logger="app.api.webhook")
+        body = b'{"probe":true}'
+
+        response = client.post(
+            "/api/v1/facebook/debug/webhook-selftest",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Request-ID": "cloudflare-selftest",
+                "CF-Connecting-IP": "203.0.113.10",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "received": True,
+            "request_id": "cloudflare-selftest",
+            "body_length": len(body),
+            "signature_present": False,
+        }
+        assert "facebook webhook POST received" in caplog.text
+        assert "request_id=cloudflare-selftest" in caplog.text
+        assert "client_ip=203.0.113.10" in caplog.text
+        assert f"body_length={len(body)}" in caplog.text
 
     def test_missing_signature_returns_403(self, client: TestClient) -> None:
         body = json.dumps(_message_payload()).encode()
@@ -783,22 +771,42 @@ class TestWebhookReceive:
         assert response.json()["events_processed"] == 0
         assert session.query(Conversation).count() == 0
 
-    def test_postback_event_persisted(
-        self, client: TestClient, session: Session
-    ) -> None:
+    def test_postback_event_persisted(self, client: TestClient, session: Session) -> None:
         response = self._post(client, _postback_payload())
         assert response.status_code == 200
         msg = session.query(Message).one()
         assert msg.event_type == "postback"
         assert msg.postback_payload == "GET_STARTED"
 
-    def test_read_event_persisted(
-        self, client: TestClient, session: Session
-    ) -> None:
+    def test_read_event_is_ignored_with_200(self, client: TestClient, session: Session) -> None:
         response = self._post(client, _read_payload())
         assert response.status_code == 200
-        msg = session.query(Message).one()
-        assert msg.event_type == "read"
+        assert response.json()["events_processed"] == 0
+        assert session.query(Message).count() == 0
+        assert session.query(Conversation).count() == 0
+
+    def test_delivery_event_is_ignored_with_200(self, client: TestClient, session: Session) -> None:
+        payload = {
+            "object": "page",
+            "entry": [
+                {
+                    "id": "page-111",
+                    "messaging": [
+                        {
+                            "sender": {"id": "user-psid-1"},
+                            "recipient": {"id": "page-111"},
+                            "timestamp": 1_700_000_003_000,
+                            "delivery": {"mids": ["mid.delivery.1"], "watermark": 1_700_000_003_000},
+                        }
+                    ],
+                }
+            ],
+        }
+        response = self._post(client, payload)
+        assert response.status_code == 200
+        assert response.json()["events_processed"] == 0
+        assert session.query(Message).count() == 0
+        assert session.query(Conversation).count() == 0
 
     def test_unknown_page_id_returns_200_no_persist(
         self, client: TestClient, session: Session

@@ -16,7 +16,13 @@ from sqlalchemy.orm import Session
 from app.services.facebook.client import FacebookGraphClient
 from app.services.facebook.exceptions import FacebookConfigurationError, FacebookOAuthStateError
 
-FACEBOOK_AUTH_SCOPES = ("public_profile", "pages_show_list", "pages_read_engagement")
+FACEBOOK_AUTH_SCOPES = (
+    "public_profile",
+    "pages_show_list",
+    "pages_read_engagement",
+    "pages_manage_metadata",
+    "pages_messaging",
+)
 
 
 @dataclass(frozen=True)
