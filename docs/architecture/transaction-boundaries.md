@@ -1,0 +1,16 @@
+# Transaction boundaries and consistency
+
+Database source of truth: MySQL models registered through `app/db/base.py`, migrations in `backend/migrations/versions/0001`–`0026`; active startup checks connectivity rather than creating tables. `app/db/session.py` supplies a session but leaves commits to services. This creates explicit service-owned transactions today; the intended target is one operation owner per call, with lower-level helpers never committing an enclosing operation.
+
+| Operation / current owner | Atomic invariant and evidence | Failure/verification |
+|---|---|---|
+| Create Order · `services/facebook/orders.py:_create_order_impl` | Order, item snapshots, created event, optional confirmed stock movement share one commit (`:885-996`). Key/fingerprint unique per Page and creator (`models/orders.py`, migration `0019`). | Roll back all on failure; replay same key returns previous result, different fingerprint conflicts. Test duplicate key and stock failure on real MySQL. |
+| Confirm/cancel Order · `orders.py:_apply_order_status_transition`, caller commit | Locks Order, applies transition, consumes/restores inventory, writes OrderEvent (`:496-567,1078-1152`); balances locked in sorted product order (`inventory.py:320-421`). | Roll back all on insufficient stock or constraint failure; concurrent confirmations must produce one movement per item. |
+| Adjust inventory · `inventory.py:187-251` | Locked product/balance, unique idempotency key, movement and balance committed together. | Retry same key as replay; reject mismatched payload; concurrency/deadlock test on MySQL. |
+| Merge Customer · `customer_duplicates.py:403-631` | Repoints identities/conversations and related customer records in one commit; unique constraints arbitrate races. | Ensure old UUID history and page isolation survive; migration/backfill tests. |
+| Webhook receive · `messenger.py:387-421` | HMAC before JSON parse; page/PSID conversation and `mid` unique message commit; `api/webhook.py:210-227` broadcasts after commit. | On unique collision reread committed winner; notification loss allowed, DB loss not. HTTP retries must not multiply messages. |
+| Send Facebook message · `conversations.py:198-251` | External Graph call precedes local insert/commit; atomicity across Graph/MySQL is impossible. | Track unknown outcome and reconcile; never blindly replay after a timeout. |
+| Shipment transition · `shipments.py:233-435` | Shipment status, event and derived Order shipping status committed together. | Check cancel/ship races under Order and Shipment locks; do not mutate an Order address after shipment snapshot. |
+| Carrier operation · `waybills.py:202-293` | Pending operation reserved and committed; no real provider called. | If provider added, separate reservation, call, finalize/reconcile; unknown result must not create duplicate remote waybills. |
+
+MySQL row locks and unique indexes are the correctness mechanisms; SQLite `StaticPool` tests exercise functional behavior but do not demonstrate InnoDB lock ordering or retry behavior. Avoid network I/O while holding DB locks. Schema migration is a separate deployment operation; do not assume a MySQL DDL migration rolls back with an application transaction. Run migration/backfill validation against a disposable MySQL instance before deployment; no live data was changed in this audit.
