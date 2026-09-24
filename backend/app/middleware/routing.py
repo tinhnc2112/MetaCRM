@@ -20,17 +20,9 @@ class ASGIIngressLoggingMiddleware:
                 key.decode("latin-1").lower(): value.decode("latin-1")
                 for key, value in scope.get("headers", [])
             }
-            client = scope.get("client")
-            client_ip = str(client[0]) if client else "unknown"
             logger.info(
-                "asgi_request_received_before_dispatch method={} path={} root_path={} "
-                "client_ip={} request_id={} content_length={} signature_present={}",
+                "asgi_webhook_request_received method={} signature_present={}",
                 scope.get("method", "UNKNOWN"),
-                scope.get("path", ""),
-                scope.get("root_path", ""),
-                client_ip,
-                headers.get("x-request-id", "unknown"),
-                headers.get("content-length", "unknown"),
                 "x-hub-signature-256" in headers,
             )
         await self.app(scope, receive, send)

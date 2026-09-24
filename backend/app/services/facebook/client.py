@@ -53,7 +53,7 @@ class FacebookGraphClient:
             body = exc.read().decode("utf-8", errors="replace")
             raise self._api_error(body, exc.code) from exc
         except URLError as exc:
-            logger.warning("Facebook Graph API network error for {}", clean_path)
+            logger.warning("Facebook Graph API network error")
             raise FacebookApiError("Facebook API request failed") from exc
 
         try:
@@ -68,20 +68,18 @@ class FacebookGraphClient:
         return decoded
 
     def _api_error(self, body: str, status_code: int) -> FacebookApiError:
-        message = "Facebook API request failed"
         code: int | None = None
 
         try:
             decoded = json.loads(body)
             error = decoded.get("error", {})
-            message = str(error.get("message") or message)
             code = int(error["code"]) if "code" in error else None
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
 
         logger.warning("Facebook Graph API error status={} code={}", status_code, code)
         if code in {190, 463, 467}:
-            return FacebookTokenError(message)
+            return FacebookTokenError("Facebook token was rejected")
         if code in {10, 200, 299} or status_code in {401, 403}:
-            return FacebookPermissionError(message)
-        return FacebookApiError(message)
+            return FacebookPermissionError("Facebook permission was denied")
+        return FacebookApiError("Facebook API request failed")

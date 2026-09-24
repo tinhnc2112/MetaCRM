@@ -101,19 +101,11 @@ def parse_webhook_payload(payload: dict[str, Any]) -> list[RawMessageEvent]:
 
         entry_id = str(entry.get("id") or "")
         messaging_items = _as_list(entry.get("messaging"))
-        logger.info(
-            "facebook webhook entry parsed entry_id=%s page_id=%s messaging_count=%d",
-            entry_id or "",
-            entry_id or "",
-            len(messaging_items),
-        )
+        logger.info("facebook webhook entry parsed messaging_count=%d", len(messaging_items))
 
         for item in messaging_items:
             if not isinstance(item, dict):
-                logger.info(
-                    "facebook webhook ignored event_type=messaging reason=non_object_item entry_id=%s",
-                    entry_id or "",
-                )
+                logger.info("facebook webhook ignored event_type=messaging reason=non_object_item")
                 continue
 
             sender = _as_dict(item.get("sender"))
@@ -124,9 +116,7 @@ def parse_webhook_payload(payload: dict[str, Any]) -> list[RawMessageEvent]:
 
             if not psid or not entry_id:
                 logger.info(
-                    "facebook webhook ignored event_type=messaging reason=missing_sender_or_entry entry_id=%s recipient_id=%s",
-                    entry_id or "",
-                    recipient_id or "",
+                    "facebook webhook ignored event_type=messaging reason=missing_sender_or_entry"
                 )
                 continue
 
@@ -135,9 +125,7 @@ def parse_webhook_payload(payload: dict[str, Any]) -> list[RawMessageEvent]:
                 msg = item["message"]
                 if not isinstance(msg, dict):
                     logger.info(
-                        "facebook webhook ignored event_type=message reason=non_object_message entry_id=%s recipient_id=%s",
-                        entry_id or "",
-                        recipient_id or "",
+                        "facebook webhook ignored event_type=message reason=non_object_message"
                     )
                     continue
 
@@ -145,22 +133,10 @@ def parse_webhook_payload(payload: dict[str, Any]) -> list[RawMessageEvent]:
                 text = msg.get("text")
                 is_echo = bool(msg.get("is_echo", False))
                 logger.info(
-                    "facebook webhook messaging item event_type=message entry_id=%s page_id=%s recipient_id=%s sender_id=%s mid=%s message_text_present=%s is_echo=%s",
-                    entry_id or "",
-                    entry_id or "",
-                    recipient_id or "",
-                    psid,
-                    mid or "",
-                    text is not None,
-                    is_echo,
+                    "facebook webhook messaging item event_type=message is_echo=%s", is_echo
                 )
                 if not mid:
-                    logger.info(
-                        "facebook webhook ignored event_type=message reason=missing_mid entry_id=%s recipient_id=%s sender_id=%s",
-                        entry_id or "",
-                        recipient_id or "",
-                        psid,
-                    )
+                    logger.info("facebook webhook ignored event_type=message reason=missing_mid")
                     continue
                 # When is_echo, the *sender* is the Page; psid is the customer
                 if is_echo:
@@ -187,23 +163,13 @@ def parse_webhook_payload(payload: dict[str, Any]) -> list[RawMessageEvent]:
                 postback = item["postback"]
                 if not isinstance(postback, dict):
                     logger.info(
-                        "facebook webhook ignored event_type=postback reason=non_object_postback entry_id=%s recipient_id=%s",
-                        entry_id or "",
-                        recipient_id or "",
+                        "facebook webhook ignored event_type=postback reason=non_object_postback"
                     )
                     continue
                 mid = postback.get("mid") or f"postback-{entry_id}-{psid}-{fb_ts}"
                 postback_title = postback.get("title")
                 postback_payload = postback.get("payload")
-                logger.info(
-                    "facebook webhook messaging item event_type=postback entry_id=%s page_id=%s recipient_id=%s sender_id=%s mid=%s text_present=%s",
-                    entry_id or "",
-                    entry_id or "",
-                    recipient_id or "",
-                    psid,
-                    mid,
-                    postback_title is not None,
-                )
+                logger.info("facebook webhook messaging item event_type=postback")
                 events.append(
                     RawMessageEvent(
                         page_id=recipient_id or entry_id,
@@ -219,30 +185,16 @@ def parse_webhook_payload(payload: dict[str, Any]) -> list[RawMessageEvent]:
 
             # ── read receipt ─────────────────────────────────────────────────
             elif "read" in item:
-                logger.info(
-                    "facebook webhook ignored event_type=read reason=unsupported entry_id=%s recipient_id=%s sender_id=%s",
-                    entry_id or "",
-                    recipient_id or "",
-                    psid,
-                )
+                logger.info("facebook webhook ignored event_type=read reason=unsupported")
                 continue
 
             elif "delivery" in item:
-                logger.info(
-                    "facebook webhook ignored event_type=delivery reason=unsupported entry_id=%s recipient_id=%s sender_id=%s",
-                    entry_id or "",
-                    recipient_id or "",
-                    psid,
-                )
+                logger.info("facebook webhook ignored event_type=delivery reason=unsupported")
                 continue
 
             else:
                 logger.info(
-                    "facebook webhook ignored event_type=unknown reason=unsupported_payload entry_id=%s recipient_id=%s sender_id=%s keys=%s",
-                    entry_id or "",
-                    recipient_id or "",
-                    psid,
-                    sorted(item.keys()),
+                    "facebook webhook ignored event_type=unknown reason=unsupported_payload"
                 )
 
     return events
@@ -360,13 +312,7 @@ def upsert_message(
         .first()
     )
     if existing is not None:
-        logger.info(
-            "facebook webhook ignored event_type=%s reason=duplicate_mid page_id=%s psid=%s mid=%s",
-            event.event_type,
-            conversation.page_id,
-            conversation.psid,
-            event.mid,
-        )
+        logger.info("facebook webhook ignored reason=duplicate_mid")
         return existing, False
 
     sent_at = _ts_to_utc(event.fb_timestamp_ms)
@@ -400,13 +346,7 @@ def process_webhook_events(
     for event in events:
         page = find_page_by_page_id(session, event.page_id)
         if page is None:
-            logger.info(
-                "facebook webhook ignored event_type=%s reason=unknown_page page_id=%s psid=%s mid=%s",
-                event.event_type,
-                event.page_id,
-                event.psid,
-                event.mid,
-            )
+            logger.info("facebook webhook ignored reason=unknown_page")
             continue  # unknown / disconnected Page — skip silently
 
         event_ts = _ts_to_utc(event.fb_timestamp_ms)

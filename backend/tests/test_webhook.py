@@ -35,6 +35,7 @@ from app.websocket.manager import ConnectionManager
 from fastapi import status
 from fastapi.testclient import TestClient
 from fastapi.websockets import WebSocketDisconnect
+from loguru import logger as loguru_logger
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -57,6 +58,12 @@ def test_facebook_webhook_post_route_is_registered() -> None:
     ]
 
     assert len(matching_routes) == 1
+
+
+def test_public_health_remains_available(client: TestClient) -> None:
+    response = client.get("/api/v1/system/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "service": "metacrm-api"}
 
 
 @pytest.fixture()
@@ -725,41 +732,86 @@ class TestWebhookReceive:
         )
         assert response.status_code == 403
         assert "facebook webhook POST received" in caplog.text
-        assert "request_id=webhook-debug-test" in caplog.text
+        assert "webhook-debug-test" not in caplog.text
         assert "signature_present=True" in caplog.text
         assert "body_length=" in caplog.text
         assert "X-Hub-Signature-256 does not match payload" in caplog.text
         assert "deadbeefdeadbeef" not in caplog.text
 
-    def test_webhook_selftest_logs_same_ingress_diagnostics(
+    def test_webhook_selftest_requires_auth_and_logs_safe_ingress(
         self,
         client: TestClient,
+        session: Session,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         caplog.set_level(logging.INFO, logger="app.api.webhook")
-        body = b'{"probe":true}'
+        secret = "sensitive-cookie-and-body-marker"
+        body = json.dumps({"access_token": secret}).encode()
+        endpoint = "/api/v1/facebook/debug/webhook-selftest"
+
+        denied = client.post(endpoint, content=body, headers={"Cookie": secret})
+        assert denied.status_code == 401
+        assert "facebook webhook POST received" not in caplog.text
+        user = session.query(User).filter(User.username == "alice").one()
 
         response = client.post(
-            "/api/v1/facebook/debug/webhook-selftest",
+            endpoint,
             content=body,
             headers={
                 "Content-Type": "application/json",
-                "X-Request-ID": "cloudflare-selftest",
-                "CF-Connecting-IP": "203.0.113.10",
+                "X-Request-ID": secret,
+                "CF-Connecting-IP": secret,
+                "Authorization": f"Bearer {create_access_token(str(user.uuid))}",
+                "X-Hub-Signature-256": secret,
             },
         )
 
         assert response.status_code == 200
-        assert response.json() == {
-            "received": True,
-            "request_id": "cloudflare-selftest",
-            "body_length": len(body),
-            "signature_present": False,
-        }
+        assert response.json()["received"] is True
+        assert response.json()["body_length"] == len(body)
+        assert response.json()["signature_present"] is True
         assert "facebook webhook POST received" in caplog.text
-        assert "request_id=cloudflare-selftest" in caplog.text
-        assert "client_ip=203.0.113.10" in caplog.text
+        assert secret not in caplog.text + response.text
         assert f"body_length={len(body)}" in caplog.text
+
+    def test_signed_webhook_never_logs_sensitive_headers_or_payload(
+        self, client: TestClient, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        caplog.set_level(logging.INFO, logger="app.api.webhook")
+        caplog.set_level(logging.INFO, logger="app.services.facebook.messenger")
+        secret = "private-webhook-customer-marker"
+        body = json.dumps(
+            _message_payload(psid=secret, mid=secret, text=secret)
+        ).encode()
+        monkeypatch.setenv("APP_DEBUG", "true")
+        get_settings.cache_clear()
+        ingress_logs: list[str] = []
+        sink = loguru_logger.add(lambda message: ingress_logs.append(str(message)))
+        try:
+            response = client.post(
+                "/api/v1/facebook/webhook", content=body,
+                headers={"X-Hub-Signature-256": _make_signature(body), "X-Request-ID": secret,
+                         "Cookie": secret, "Authorization": secret, "X-Extra-Secret": secret},
+            )
+        finally:
+            loguru_logger.remove(sink)
+        assert response.status_code == 200
+        assert secret not in caplog.text + "".join(ingress_logs) + response.text
+        assert "signature_present=True" in caplog.text
+
+    def test_signed_webhook_does_not_impose_an_unapproved_one_mib_limit(
+        self, client: TestClient, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.INFO, logger="app.api.webhook")
+        body = json.dumps({"object": "unsupported", "padding": "x" * 1_048_576}).encode()
+        response = client.post(
+            "/api/v1/facebook/webhook",
+            content=body,
+            headers={"X-Hub-Signature-256": _make_signature(body)},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"received": True, "events_processed": 0}
+        assert "xxxxxxxx" not in caplog.text + response.text
 
     def test_missing_signature_returns_403(self, client: TestClient) -> None:
         body = json.dumps(_message_payload()).encode()
