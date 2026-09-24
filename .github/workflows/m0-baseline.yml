@@ -1,0 +1,67 @@
+name: M0 baseline
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      mysql-test:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: metacrm_m0_test_e2e
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    env:
+      DATABASE_URL: mysql+pymysql://root@127.0.0.1:3306/metacrm_m0_test_e2e
+      METACRM_E2E_DATABASE_URL: mysql+pymysql://root@127.0.0.1:3306/metacrm_m0_test_e2e
+      METACRM_E2E: "true"
+      APP_ENV: test
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: backend/requirements/dev.lock.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements/dev.lock.txt
+      - name: Verify baseline lint
+        run: python scripts/check_ruff_baseline.py
+      - name: Migrate and seed isolated MySQL
+        run: |
+          python backend/scripts/e2e_harness.py prepare > /dev/null
+          (cd backend && python -m scripts.m0_seed_mysql)
+      - name: Check Alembic head
+        working-directory: backend
+        run: |
+          python -m alembic heads
+          python -m alembic current --check-heads
+      - name: Backend tests (including MySQL concurrency)
+        run: python -m pytest -q backend/tests -rx -rs
+      - name: Require MySQL concurrency test to execute
+        run: |
+          python -m pytest -q backend/tests/test_waybills.py::test_mysql_two_session_finalization_serializes_current_pointer -rs > /tmp/m0-mysql-result.txt
+          cat /tmp/m0-mysql-result.txt
+          if grep -q 'skipped' /tmp/m0-mysql-result.txt; then exit 1; fi
+      - name: Desktop build
+        working-directory: desktop
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Extension build
+        working-directory: extension
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
