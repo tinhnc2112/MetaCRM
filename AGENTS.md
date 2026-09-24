@@ -240,7 +240,8 @@ Do not:
 
 # 6. Git Workflow
 
-Never push directly to `main`.
+Never push directly to `main`, force-push a shared branch, merge to `main`,
+deploy to production, or delete production data without explicit authorization.
 
 For every implementation task:
 
@@ -251,8 +252,10 @@ For every implementation task:
 5. run relevant verification
 6. inspect `git diff`
 7. commit
-8. push the branch
-9. create a Pull Request
+8. push the branch when credentials are already available
+9. create a Pull Request when the branch is available remotely
+
+If pushing is unavailable, follow the Work Sandbox Delivery Protocol below.
 
 Do not merge automatically unless explicitly authorized.
 
@@ -267,7 +270,57 @@ Do not commit:
 
 ---
 
-# 7. Completion Report
+# 7. Autonomous Execution Policy
+
+Autonomous execution is the default. For an authorized task, independently
+investigate, implement, run relevant verification, diagnose and fix failures,
+review the final diff, update directly affected documentation, commit, and
+deliver a feature branch and Pull Request or a patch as described below.
+
+Do not interrupt the user for routine implementation decisions, naming or
+internal design details, normal refactoring required by the task, lint/type/test
+failures, fixing failures caused by the implementation, adding or updating
+tests, directly affected documentation, safe development commands, or
+intermediate progress updates.
+
+When something fails: investigate -> determine the root cause -> fix -> verify
+again -> continue.
+
+Request human confirmation only when:
+
+- product requirements are materially ambiguous
+- destructive or difficult-to-reverse operations are required
+- a breaking API, schema, or compatibility change requires approval
+- a major architecture decision conflicts with an existing ADR
+- credentials or external permissions are required
+- a production deployment or action requires approval
+- a genuine blocker cannot be safely resolved
+
+# 8. Work Sandbox Delivery Protocol
+
+Work may run in an isolated repository under `/workspace`. Identify the actual
+working tree and do not imply that changes were made to another local checkout.
+
+If GitHub push is unavailable:
+
+1. Do not repeatedly retry authentication or request GitHub passwords, PATs,
+   tokens, or other secrets.
+2. Continue the task locally in the sandbox and complete the implementation.
+3. Run all relevant verification; investigate and fix failures when safely
+   possible.
+4. Review the final diff and commit the completed work to the task branch.
+5. Verify that `origin/main` is the intended patch base.
+6. Export commits not present in `origin/main` with
+   `git format-patch origin/main..HEAD --stdout` to a downloadable `.patch` file.
+7. Report the patch artifact, source branch, source commit(s), verification
+   results, and any genuine human decision gates.
+
+Push unavailability alone does not block completion. Do not copy the repository
+to another workspace to work around authentication.
+
+---
+
+# 9. Completion Report
 
 Before declaring a task complete, report:
 
@@ -301,7 +354,7 @@ How the change can be safely reverted.
 
 ---
 
-# 8. Source of Truth
+# 10. Source of Truth
 
 When documentation conflicts with implementation:
 
