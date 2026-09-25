@@ -286,6 +286,13 @@ intermediate progress updates.
 When something fails: investigate -> determine the root cause -> fix -> verify
 again -> continue.
 
+For an assigned roadmap milestone or bounded batch, use the Autonomous
+Milestone Runner in `.ai/instructions.md`. Complete focused and regression
+verification, security/reliability review, and a separate commit per milestone;
+continue through the assigned batch without routine approval. Stop before an
+unresolved product decision gate or beyond the assigned batch. Never weaken a
+valid failing test to make verification green.
+
 Request human confirmation only when:
 
 - product requirements are materially ambiguous
@@ -295,6 +302,10 @@ Request human confirmation only when:
 - credentials or external permissions are required
 - a production deployment or action requires approval
 - a genuine blocker cannot be safely resolved
+
+An unavailable Docker/MySQL sandbox or GitHub push does not by itself block
+other local work. Report verification as PASS, FAIL, SKIPPED, or NOT RUN with
+the environment reason; do not claim a check passed unless it ran.
 
 # 8. Work Sandbox Delivery Protocol
 
@@ -312,6 +323,7 @@ If GitHub push is unavailable:
 5. Verify that `origin/main` is the intended patch base.
 6. Export commits not present in `origin/main` with
    `git format-patch origin/main..HEAD --stdout` to a downloadable `.patch` file.
+   Confirm the patch contains exactly the task commits in order.
 7. Report the patch artifact, source branch, source commit(s), verification
    results, and any genuine human decision gates.
 

@@ -7,13 +7,15 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 load_dotenv(PROJECT_ROOT / ".env")
 
 
 class Settings(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     app_name: str = Field(default="MetaCRM API", validation_alias="APP_NAME")
     app_version: str = Field(default="0.1.0", validation_alias="APP_VERSION")
     environment: Literal["development", "test", "staging", "production"] = Field(
@@ -61,6 +63,21 @@ class Settings(BaseModel):
     upload_dir: Path = Field(default=PROJECT_ROOT / "backend" / "uploads", validation_alias="UPLOAD_DIR")
     log_dir: Path = Field(default=PROJECT_ROOT / "backend" / "logs", validation_alias="LOG_DIR")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+
+    @model_validator(mode="after")
+    def validate_production_signing_secret(self) -> Settings:
+        if self.environment in {"staging", "production"}:
+            value = self.secret_key.strip()
+            if (
+                len(value) < 32
+                or value.lower() in {
+                    "development-only-change-me",
+                    "replace-with-a-long-random-secret-key",
+                }
+                or len(set(value)) < 8
+            ):
+                raise ValueError("A strong explicit SECRET_KEY is required for staging/production")
+        return self
 
     @field_validator("cors_origins", mode="before")
     @classmethod

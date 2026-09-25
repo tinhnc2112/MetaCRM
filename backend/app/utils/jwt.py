@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import jwt
 from app.core.config import get_settings
@@ -42,7 +43,10 @@ def create_access_token(subject: str, additional_claims: dict[str, Any] | None =
 def create_refresh_token(subject: str) -> str:
     """Create a signed refresh token for a subject."""
     settings = get_settings()
-    return _create_token(subject, timedelta(days=settings.refresh_token_expire_days), "refresh")
+    return _create_token(
+        subject, timedelta(days=settings.refresh_token_expire_days), "refresh",
+        {"jti": str(uuid4())},
+    )
 
 
 def decode_access_token(token: str) -> dict[str, Any]:

@@ -1,12 +1,25 @@
-import { Button, Layout, Space, Typography } from "antd";
+import { App, Button, Layout, Space, Typography } from "antd";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { useAuthStore } from "../stores/authStore";
+import { logout } from "../services/authService";
 
 export function AppHeader() {
   const navigate = useNavigate();
   const location = useLocation();
   const clearSession = useAuthStore((state) => state.clearSession);
+  const refreshToken = useAuthStore((state) => state.session?.refreshToken);
+  const { message } = App.useApp();
+  const signOut = async () => {
+    try {
+      if (refreshToken) await logout(refreshToken);
+    } catch {
+      void message.warning("Server sign out could not be confirmed. Your local session was cleared.");
+    } finally {
+      clearSession();
+      navigate("/login");
+    }
+  };
   const title = getHeaderTitle(location.pathname);
 
   return (
@@ -14,10 +27,7 @@ export function AppHeader() {
       <Typography.Text strong>{title}</Typography.Text>
       <Space>
         <Button
-          onClick={() => {
-            clearSession();
-            navigate("/login");
-          }}
+          onClick={() => { void signOut(); }}
         >
           Sign out
         </Button>
