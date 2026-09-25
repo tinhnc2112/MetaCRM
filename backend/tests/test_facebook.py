@@ -15,6 +15,7 @@ from app.services.facebook.auth import (
     generate_authorization_url,
     validate_oauth_state,
 )
+from app.services.facebook.client import FacebookGraphClient
 from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.exceptions import FacebookApiError, FacebookOAuthStateError
 from app.services.facebook.pages import FacebookPageData, sync_facebook_pages
@@ -25,6 +26,7 @@ from app.services.facebook.subscriptions import (
 from app.utils.jwt import create_access_token
 from app.utils.password import hash_password
 from fastapi.testclient import TestClient
+from loguru import logger
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -315,10 +317,69 @@ def test_debug_page_token_returns_only_token_metadata(
     )
 
     assert response.status_code == 200
-    assert response.json()["token_prefix"] == token[:30]
-    assert response.json()["token_length"] == len(token)
+    assert response.json()["token_available"] is True
     assert response.json()["expires_at"] is not None
     assert token not in response.text
+    assert token[:30] not in response.text
+
+
+def test_debug_page_token_requires_auth(client: TestClient) -> None:
+    response = client.get("/api/v1/facebook/debug/page-token/page-1")
+    assert response.status_code == 401
+
+
+def test_debug_graph_response_redacts_nested_credentials() -> None:
+    from app.api.facebook import safe_graph_diagnostics
+
+    secret = "credential-marker-example"
+    data = {"data": [{"id": "app-1", "access_token": secret,
+                       "message": f"provider error: {secret}",
+                       "nested": {"client_secret": secret, "cookie": secret}}]}
+    rendered = str(safe_graph_diagnostics(data))
+    assert secret not in rendered
+    assert "app-1" in rendered
+
+
+def test_graph_diagnostic_allowlist_preserves_subscription_evidence() -> None:
+    from app.api.facebook import safe_graph_diagnostics
+
+    secret = "credential-fragment-marker"
+    response = {
+        "data": [{
+            "id": "app-1", "name": "MetaCRM", "object": "page",
+            "callback_url": "https://example.com/webhook",
+            "fields": [{"name": "messages", "version": "v26.0"}],
+            "subscribed_fields": ["messages"], "active": True,
+            "access_token": secret, "message": secret, "error": {"detail": secret},
+        }],
+        "success": True,
+    }
+    safe = safe_graph_diagnostics(response)
+    item = safe["data"][0]
+    assert item["id"] == "app-1"
+    assert item["name"] == "MetaCRM"
+    assert item["object"] == "page"
+    assert item["callback_url"] == "https://example.com/webhook"
+    assert item["fields"] == [{"name": "messages", "version": "v26.0"}]
+    assert item["subscribed_fields"] == ["messages"]
+    assert item["active"] is True
+    assert safe["success"] is True
+    assert item["access_token"] == item["message"] == item["error"] == "<redacted>"
+    assert secret not in str(safe)
+
+
+def test_provider_error_never_returns_or_logs_token_fragment() -> None:
+    secret = "credential-fragment-marker-98765"
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(str(message)))
+    try:
+        error = FacebookGraphClient()._api_error(
+            '{"error":{"code":190,"message":"token ' + secret + '"}}', 401
+        )
+    finally:
+        logger.remove(sink)
+    assert secret not in str(error) + "".join(logged)
+    assert "token was rejected" in str(error)
 
 
 def test_debug_token_scopes_returns_user_token_permissions(
@@ -534,6 +595,9 @@ def test_debug_app_info_returns_unknown_for_unexposed_dashboard_states(
     assert body["messenger_product_enabled"] == "UNKNOWN"
     assert body["webhook_product_enabled"] == "UNKNOWN"
     assert body["graph_evidence"]["page_messages_subscription_present"] is True
+    assert body["graph_evidence"]["app_subscriptions"]["data"][0]["fields"] == [
+        {"name": "messages", "version": "v26.0"}
+    ]
 
 
 def test_debug_webhook_subscriptions_confirms_matching_app_ids(
@@ -579,6 +643,10 @@ def test_debug_webhook_subscriptions_confirms_matching_app_ids(
     assert response.status_code == 200
     body = response.json()
     assert body["subscribed_fields"] == ["messages"]
+    assert body["page_subscriptions"]["data"][0]["subscribed_fields"] == ["messages"]
+    assert body["app_subscriptions"]["data"][0]["fields"] == [
+        {"name": "messages", "version": "v26.0"}
+    ]
     assert body["callback_url"] == (
         "https://example.trycloudflare.com/api/v1/facebook/webhook"
     )
@@ -725,6 +793,10 @@ def test_messenger_diagnostics_collects_graph_v26_delivery_prerequisites(
         "https://example.trycloudflare.com/api/v1/facebook/webhook"
     )
     assert body["graph_errors"] == []
+    assert body["app_subscriptions"]["data"][0]["fields"] == [
+        {"name": "messages", "version": "v26.0"},
+        {"name": "messaging_postbacks", "version": "v26.0"},
+    ]
     assert body["diagnosis"] == "WARNING"
     assert "user-access-token" not in response.text
     assert "page-access-token" not in response.text

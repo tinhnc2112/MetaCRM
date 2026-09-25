@@ -23,6 +23,8 @@ from app.services.facebook.auth import (
     get_facebook_user_info,
     validate_oauth_state,
 )
+from app.services.facebook.client import FacebookGraphClient
+from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.exceptions import (
     FacebookApiError,
     FacebookConfigurationError,
@@ -40,8 +42,6 @@ from app.services.facebook.pages import (
     sync_facebook_pages,
     upsert_facebook_account,
 )
-from app.services.facebook.client import FacebookGraphClient
-from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.subscriptions import SUBSCRIBED_FIELDS
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
@@ -85,8 +85,29 @@ def http_error(exc: FacebookIntegrationError) -> HTTPException:
     if isinstance(exc, FacebookPageUnavailableError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     if isinstance(exc, FacebookApiError):
-        return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail="Facebook API request failed"
+        )
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+def safe_graph_diagnostics(value: Any) -> Any:
+    """Keep known Graph metadata; redact unexpected fields and credentials."""
+    if isinstance(value, dict):
+        safe_fields = {
+            "data", "id", "name", "subscribed_fields", "fields", "object",
+            "active", "success", "callback_url", "tasks", "category", "permissions",
+            "version",
+        }
+        return {
+            key: (
+                safe_graph_diagnostics(item) if key in safe_fields else "<redacted>"
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [safe_graph_diagnostics(item) for item in value]
+    return value
 
 
 def page_access_token(page: FacebookPage) -> str:
@@ -256,7 +277,7 @@ def debug_subscribed_apps(
             graph_response,
             settings.facebook_app_id,
         ),
-        "graph_response": graph_response,
+        "graph_response": safe_graph_diagnostics(graph_response),
     }
 
 
@@ -451,7 +472,7 @@ def debug_app_info(
             "page_messages_subscription_present": has_page_messages_subscription(
                 subscriptions_response
             ),
-            "app_subscriptions": subscriptions_response,
+            "app_subscriptions": safe_graph_diagnostics(subscriptions_response),
         },
         "unknown_reasons": [
             "Graph API does not expose a supported App Mode field.",
@@ -570,8 +591,8 @@ def debug_webhook_subscriptions(
     return {
         "graph_api_version": MESSENGER_DIAGNOSTICS_GRAPH_VERSION,
         "page_id": page.page_id,
-        "app_subscriptions": app_subscriptions,
-        "page_subscriptions": page_subscriptions,
+        "app_subscriptions": safe_graph_diagnostics(app_subscriptions),
+        "page_subscriptions": safe_graph_diagnostics(page_subscriptions),
         "subscribed_fields": subscribed_fields_for_app(
             page_subscriptions,
             settings.facebook_app_id,
@@ -631,16 +652,15 @@ def debug_messenger_diagnostics(
                     "check": check,
                     "path": path,
                     "error_type": type(exc).__name__,
-                    "message": str(exc),
+                    "message": "Facebook API request failed",
                 }
             )
             logger.warning(
                 "facebook_messenger_diagnostics_graph_error "
-                "check={} path={} error_type={} error={}",
+                "check={} path={} error_type={}",
                 check,
                 path,
                 type(exc).__name__,
-                str(exc),
             )
             return {}
 
@@ -873,7 +893,7 @@ def debug_messenger_diagnostics(
             "expires_at": user_debug_data.get("expires_at"),
         },
         "subscribed_apps": subscribed_apps,
-        "app_subscriptions": app_subscriptions,
+        "app_subscriptions": safe_graph_diagnostics(app_subscriptions),
         "webhook_callback": webhook_callback,
         "configured_webhook_callback": configured_callback or None,
         "messenger_product_status": messenger_product_status,
@@ -897,8 +917,7 @@ def debug_page_token(
 
     return {
         "page_id": page.page_id,
-        "token_prefix": token[:30],
-        "token_length": len(token),
+        "token_available": bool(token),
         "expires_at": page.token_expires_at,
     }
 
@@ -931,22 +950,16 @@ def debug_resubscribe(
         )
     except FacebookIntegrationError as exc:
         logger.warning(
-            "facebook_debug_resubscribe_error page_id={} error_type={} graph_error={}",
-            page_id,
+            "facebook_debug_resubscribe_error error_type={}",
             type(exc).__name__,
-            str(exc),
         )
         raise http_error(exc) from exc
 
-    logger.info(
-        "facebook_debug_resubscribe_response page_id={} graph_response={}",
-        page.page_id,
-        graph_response,
-    )
+    logger.info("facebook_debug_resubscribe_response page_id={}", page.page_id)
     return {
         "page_id": page.page_id,
         "request_path": request_path,
-        "graph_response": graph_response,
+        "graph_response": safe_graph_diagnostics(graph_response),
     }
 
 
@@ -965,7 +978,10 @@ def debug_webhook_health(
 
 
 @router.post("/debug/webhook-selftest")
-async def debug_webhook_selftest(request: Request) -> dict[str, Any]:
+async def debug_webhook_selftest(
+    request: Request,
+    _current_user: Annotated[User, Depends(require_active_user)],
+) -> dict[str, Any]:
     request_id, signature_header, body = await read_and_log_webhook_request(request)
     logger.info(
         "facebook_webhook_selftest_accepted request_id={} body_length={} signature_present={}",

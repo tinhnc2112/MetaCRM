@@ -23,48 +23,18 @@ from sqlalchemy.orm import Session
 router = APIRouter(prefix="/facebook/webhook", tags=["webhook"])
 logger = logging.getLogger(__name__)
 
-SENSITIVE_HEADER_NAMES = {
-    "authorization",
-    "cf-access-jwt-assertion",
-    "cookie",
-    "proxy-authorization",
-    "set-cookie",
-    "x-auth-request-access-token",
-    "x-hub-signature-256",
-}
-
-
-def sanitized_headers(request: Request) -> dict[str, str]:
-    return {
-        name: "<redacted>" if name.lower() in SENSITIVE_HEADER_NAMES else value
-        for name, value in request.headers.items()
-    }
-
-
-def request_client_ip(request: Request) -> str:
-    cloudflare_ip = request.headers.get("CF-Connecting-IP")
-    if cloudflare_ip:
-        return cloudflare_ip
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",", maxsplit=1)[0].strip()
-    return request.client.host if request.client else "unknown"
-
 
 async def read_and_log_webhook_request(
     request: Request,
 ) -> tuple[str, str | None, bytes]:
     """Read a request body and emit the common webhook ingress diagnostics."""
-    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    # Client-supplied header values are untrusted, including request IDs and lengths.
+    request_id = str(uuid4())
     signature_header = request.headers.get("X-Hub-Signature-256")
-    declared_content_length = request.headers.get("Content-Length")
     logger.info(
-        "facebook webhook POST received request_id=%s client_ip=%s content_length=%s signature_present=%s headers=%s",
+        "facebook webhook POST received request_id=%s signature_present=%s",
         request_id,
-        request_client_ip(request),
-        declared_content_length or "unknown",
         bool(signature_header),
-        sanitized_headers(request),
     )
     body = await request.body()
     logger.info(
@@ -186,22 +156,21 @@ async def webhook_receive(
             detail="Invalid JSON payload",
         ) from exc
 
-    object_type = str(payload.get("object") or "")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload")
+    object_type = payload.get("object")
     entries = payload.get("entry")
     entry_count = len(entries) if isinstance(entries, list) else 0
     logger.info(
-        "facebook webhook payload parsed request_id=%s object_type=%s entry_count=%d",
+        "facebook webhook payload parsed request_id=%s is_page=%s entry_count=%d",
         request_id,
-        object_type,
+        object_type == "page",
         entry_count,
     )
 
-    if settings.debug:
-        logger.debug("facebook webhook raw payload=%s", payload)
-
     # Facebook wraps all Messenger events under object="page"
     if object_type != "page":
-        logger.info("facebook webhook ignored event_type=%s reason=unsupported_object", object_type or "unknown")
+        logger.info("facebook webhook ignored reason=unsupported_object")
         return WebhookAcceptedResponse(received=True, events_processed=0)
 
     events = parse_webhook_payload(payload)

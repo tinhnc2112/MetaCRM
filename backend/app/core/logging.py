@@ -15,8 +15,8 @@ def configure_logging(settings: Settings) -> None:
         sys.stderr,
         level=level,
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}",
-        backtrace=settings.debug,
-        diagnose=settings.debug,
+        backtrace=False,
+        diagnose=False,
     )
     logger.add(
         settings.log_dir / "application.log",

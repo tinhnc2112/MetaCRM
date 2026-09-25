@@ -16,7 +16,8 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
-        debug=settings.debug,
+        # Starlette debug tracebacks can expose request data and credentials.
+        debug=False,
         lifespan=lifespan,
         docs_url="/docs" if settings.environment != "production" else None,
         redoc_url="/redoc" if settings.environment != "production" else None,
