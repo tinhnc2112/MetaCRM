@@ -65,6 +65,11 @@ jobs:
           python -m pytest -q backend/tests/test_webhook_mysql.py -rs > /tmp/m3-mysql-result.txt
           cat /tmp/m3-mysql-result.txt
           if grep -q 'skipped' /tmp/m3-mysql-result.txt; then exit 1; fi
+      - name: Require order and inventory MySQL invariants to execute
+        run: |
+          python -m pytest -q backend/tests/test_order_inventory_mysql.py -rs > /tmp/m4-mysql-result.txt
+          cat /tmp/m4-mysql-result.txt
+          if grep -q 'skipped' /tmp/m4-mysql-result.txt; then exit 1; fi
       - name: Desktop build
         working-directory: desktop
         run: |

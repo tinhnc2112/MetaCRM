@@ -20,4 +20,12 @@ for the post-commit WebSocket notification. The guarded disposable MySQL test
 proves this race under InnoDB; SQLite tests cover signed ingress and ordinary
 duplicate delivery.
 
+M4: The guarded MySQL suite exercises simultaneous confirmation/cancellation
+of one Order, concurrent stock adjustment versus confirmation, and a simulated
+deadlock during the balance update. It checks the committed balance, unique
+per-item movements, transition events and rollback before a safe retry. No
+production Order/Inventory behavior or schema changed without a demonstrated
+defect. Run the new MySQL gate before treating these InnoDB invariants as
+verified; SQLite cannot establish row-lock behavior.
+
 MySQL row locks and unique indexes are the correctness mechanisms; SQLite `StaticPool` tests exercise functional behavior but do not demonstrate InnoDB lock ordering or retry behavior. Avoid network I/O while holding DB locks. Schema migration is a separate deployment operation; do not assume a MySQL DDL migration rolls back with an application transaction. Run migration/backfill validation against a disposable MySQL instance before deployment; no live data was changed in this audit.
