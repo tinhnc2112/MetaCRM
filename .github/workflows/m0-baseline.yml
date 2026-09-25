@@ -55,6 +55,11 @@ jobs:
           python -m pytest -q backend/tests/test_waybills.py::test_mysql_two_session_finalization_serializes_current_pointer -rs > /tmp/m0-mysql-result.txt
           cat /tmp/m0-mysql-result.txt
           if grep -q 'skipped' /tmp/m0-mysql-result.txt; then exit 1; fi
+      - name: Require refresh rotation MySQL concurrency to execute
+        run: |
+          python -m pytest -q backend/tests/test_auth_mysql.py::test_mysql_concurrent_refresh_only_one_rotation_commits -rs > /tmp/m2b-mysql-result.txt
+          cat /tmp/m2b-mysql-result.txt
+          if grep -q 'skipped' /tmp/m2b-mysql-result.txt; then exit 1; fi
       - name: Desktop build
         working-directory: desktop
         run: |

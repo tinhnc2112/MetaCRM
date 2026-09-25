@@ -64,3 +64,21 @@ class Role(Base):
     users: Mapped[list[User]] = relationship(
         secondary=user_roles, back_populates="roles", lazy="selectin"
     )
+
+
+class RefreshSession(Base):
+    """One issued refresh credential; only its non-secret JWT ID is stored."""
+
+    __tablename__ = "refresh_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -1,7 +1,7 @@
 """SQLAlchemy model package. Import models here for Alembic discovery."""
 
 from app.db.base import Base
-from app.models.auth import Role, User, user_roles
+from app.models.auth import RefreshSession, Role, User, user_roles
 from app.models.base import AuditMixin, BaseModel, SoftDeleteMixin, UTCDateTimeMixin, UUIDMixin
 from app.models.carriers import CarrierAccount, CarrierOperation, ExternalWaybill
 from app.models.customer_core import Customer, CustomerIdentity
@@ -47,6 +47,7 @@ __all__ = [
     "OrderEvent",
     "OrderItem",
     "Product",
+    "RefreshSession",
     "Role",
     "Shipment",
     "ShipmentEvent",
