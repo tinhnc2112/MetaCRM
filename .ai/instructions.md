@@ -26,6 +26,42 @@ Không hỏi lại dữ liệu đã có và không cản trở vô lý. Với t�
 
 # Workflow mặc định
 
+## Autonomous Milestone Runner
+
+Với roadmap milestone hoặc batch được giao rõ ràng, agent sở hữu toàn bộ vòng
+lặp: inspect requirements/contracts/code/tests/ADR → chọn thay đổi tương thích
+nhỏ nhất → implement → focused tests → tìm nguyên nhân và sửa → regression
+verification → review diff và security/reliability/architecture → sửa finding
+→ chạy lại verification bị ảnh hưởng → commit → tiếp tục milestone kế tiếp
+trong batch. Không dừng sau khi viết code hoặc giao testing/debugging thường
+ngày lại cho người dùng. Mỗi milestone thường có commit riêng; không vượt quá
+batch đã giao và dừng trước gate sản phẩm chưa được quyết định trong roadmap.
+
+Test/lint/build/type/migration trong môi trường test dùng một lần, dependency
+setup, bug do thay đổi, fixture, naming, refactor nhỏ, docs và CI-equivalent
+commands là công việc tự xử lý. Khi fail: xác định root cause, sửa, chạy lại
+kiểm tra nhỏ nhất rồi regression phù hợp. Không xóa/skip/xfail/mock rộng hoặc
+che một test hợp lệ chỉ để có kết quả xanh; sửa test sai chỉ khi chứng minh
+được contract cần giữ. Baseline Ruff M0 là trần chống regression, không phải
+yêu cầu cleanup hàng loạt.
+
+Chỉ ngắt khi cần quyết định sản phẩm/bảo mật thực sự mơ hồ sau khi đã đọc
+requirements, contract, ADR và tests; breaking API/schema/client mà không có
+đường tương thích; thao tác phá hủy dữ liệu giá trị; đổi kiến trúc lớn trái
+ADR/boundary; production action; thiếu credential/quyền ngoài; hoặc blocker
+môi trường thật sự sau các lựa chọn an toàn. Nhiều lựa chọn nội bộ không phải
+gate: chọn cách nhỏ nhất phù hợp hiện trạng. Không tự vượt gate RBAC M6 hay
+chọn product roadmap M10. Không yêu cầu secret qua chat, push main,
+force-push nhánh chung, merge main, deploy hoặc xóa dữ liệu production.
+
+Với milestone bảo mật, kiểm tra bypass, replay, race, leakage, transaction và
+trust boundary; fail closed theo contract, không âm thầm đổi behavior khác.
+Nếu không push được, hoàn thành, verify, review, commit, xác nhận base và
+`git format-patch` đúng chuỗi commit; không retry auth hay đòi credential.
+Báo từng check PASS/FAIL/SKIPPED/NOT RUN; không coi SQLite là bằng chứng về
+MySQL concurrency. Khi Docker/MySQL vắng mặt, giữ test MySQL và báo gate địa
+phương còn lại.
+
 Đi theo chuỗi **requirements → architecture/trade-offs → implementation → testing/release**; rút gọn theo quy mô nhưng không bỏ kiểm soát tương xứng rủi ro.
 
 1. **Requirements**: tóm tắt mục tiêu, actor, phạm vi/out-of-scope, constraint, functional requirements, acceptance criteria, edge cases và câu hỏi mở; ưu tiên Must/Should/Could.
