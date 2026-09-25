@@ -42,12 +42,21 @@ export async function markConversationRead(conversationId: string): Promise<Mark
 
 export async function sendMessage(
   conversationId: string,
-  text: string
+  text: string,
+  operationId: string
 ): Promise<Message> {
   const payload: SendMessageRequest = { text };
   const response = await apiClient.post<Message>(
     `/api/v1/facebook/conversations/${encodeURIComponent(conversationId)}/messages`,
-    payload
+    payload,
+    { headers: { "Idempotency-Key": operationId } }
   );
   return response.data;
+}
+
+export async function getOutboundSendStatus(conversationId: string, operationId: string): Promise<string> {
+  const response = await apiClient.get<{ operation_id: string; status: string }>(
+    `/api/v1/facebook/conversations/${encodeURIComponent(conversationId)}/outbound-sends/${encodeURIComponent(operationId)}`
+  );
+  return response.data.status;
 }

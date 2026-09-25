@@ -21,7 +21,7 @@ import {
   removeCustomerTag,
   updateCustomerTag
 } from "../services/customerTagService";
-import { listConversations, listMessages, markConversationRead, sendMessage } from "../services/messengerService";
+import { getOutboundSendStatus, listConversations, listMessages, markConversationRead, sendMessage } from "../services/messengerService";
 import { useAuthStore } from "../stores/authStore";
 import type { Conversation, Message } from "../types/messenger";
 import type { CustomerTag } from "../types/customer";
@@ -39,6 +39,7 @@ export function MessengerInboxPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [draftText, setDraftText] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
+  const [unresolvedSend, setUnresolvedSend] = useState<{ conversationId: string; operationId: string } | null>(null);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
   const accessToken = useAuthStore((state) => state.session?.accessToken ?? null);
@@ -96,17 +97,16 @@ export function MessengerInboxPage() {
   });
 
   const sendMessageMutation = useMutation({
-    mutationFn: ({ conversationId, text }: { conversationId: string; text: string }) =>
-      sendMessage(conversationId, text),
-    onSuccess: async (message) => {
-      setDraftText("");
+    mutationFn: ({ conversationId, text, operationId }: { conversationId: string; text: string; operationId: string }) =>
+      sendMessage(conversationId, text, operationId),
+    onSuccess: async (message, variables) => {
+      if (selectedConversationId === variables.conversationId) setDraftText("");
       setSendError(null);
-      if (selectedConversationId) {
-        await queryClient.invalidateQueries({ queryKey: ["messenger-messages", currentPageId, selectedConversationId] });
-        await queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, selectedConversationId] });
-      }
+      setUnresolvedSend(null);
+      await queryClient.invalidateQueries({ queryKey: ["messenger-messages", currentPageId, variables.conversationId] });
+      await queryClient.invalidateQueries({ queryKey: ["customer-profile", currentPageId, variables.conversationId] });
       await queryClient.invalidateQueries({ queryKey: ["messenger-conversations", currentPageId] });
-      queryClient.setQueryData(["messenger-messages", currentPageId, selectedConversationId], (previous: any) => {
+      queryClient.setQueryData(["messenger-messages", currentPageId, variables.conversationId], (previous: any) => {
         if (!previous?.items) {
           return previous;
         }
@@ -117,7 +117,7 @@ export function MessengerInboxPage() {
       });
     },
     onError: () => {
-      setSendError("Could not send the message.");
+      setSendError("Delivery may have succeeded. Check the Page inbox and delivery status before sending again.");
     }
   });
 
@@ -276,10 +276,32 @@ export function MessengerInboxPage() {
   const tagCustomers = tagCustomersQuery.data?.items ?? [];
 
   const handleSend = () => {
-    if (!selectedConversationId || !trimmedDraft || sendMessageMutation.isPending) {
+    if (!selectedConversationId || !trimmedDraft || sendMessageMutation.isPending || unresolvedSend) {
       return;
     }
-    void sendMessageMutation.mutateAsync({ conversationId: selectedConversationId, text: trimmedDraft });
+    const operationId = crypto.randomUUID();
+    setUnresolvedSend({ conversationId: selectedConversationId, operationId });
+    sendMessageMutation.mutate({ conversationId: selectedConversationId, text: trimmedDraft, operationId });
+  };
+
+  const checkDelivery = async () => {
+    if (!unresolvedSend) return;
+    try {
+      const result = await getOutboundSendStatus(unresolvedSend.conversationId, unresolvedSend.operationId);
+      if (result === "sent") {
+        if (selectedConversationId === unresolvedSend.conversationId) setDraftText("");
+        setUnresolvedSend(null);
+        setSendError(null);
+        await queryClient.invalidateQueries({ queryKey: ["messenger-messages", currentPageId, unresolvedSend.conversationId] });
+      } else if (result === "rejected") {
+        setUnresolvedSend(null);
+        setSendError("The provider rejected this message. Check Page permissions before retrying.");
+      } else {
+        setSendError("Delivery remains uncertain. Inspect the Page inbox before any new send.");
+      }
+    } catch {
+      setSendError("Could not check delivery. Keep this draft and try checking again.");
+    }
   };
 
   const handleSaveNote = async ({ noteId, content }: { noteId: string | null; content: string }) => {
@@ -375,9 +397,10 @@ export function MessengerInboxPage() {
                   value={draftText}
                   error={sendError}
                   loading={sendMessageMutation.isPending}
-                  disabled={!trimmedDraft}
+                  disabled={!trimmedDraft || Boolean(unresolvedSend)}
                   onChange={setDraftText}
                   onSend={handleSend}
+                  onCheckDelivery={unresolvedSend ? checkDelivery : undefined}
                 />
               </div>
             ) : (
@@ -391,9 +414,10 @@ export function MessengerInboxPage() {
                   value={draftText}
                   error={sendError}
                   loading={sendMessageMutation.isPending}
-                  disabled={!trimmedDraft}
+                  disabled={!trimmedDraft || Boolean(unresolvedSend)}
                   onChange={setDraftText}
                   onSend={handleSend}
+                  onCheckDelivery={unresolvedSend ? checkDelivery : undefined}
                 />
               </div>
             )}
@@ -493,7 +517,8 @@ function MessageComposer({
   loading,
   disabled,
   onChange,
-  onSend
+  onSend,
+  onCheckDelivery
 }: {
   value: string;
   error: string | null;
@@ -501,6 +526,7 @@ function MessageComposer({
   disabled: boolean;
   onChange: (value: string) => void;
   onSend: () => void;
+  onCheckDelivery?: () => void;
 }) {
   return (
     <div className="messenger-composer">
@@ -522,6 +548,7 @@ function MessageComposer({
         <Button type="primary" onClick={onSend} loading={loading} disabled={disabled}>
           Send
         </Button>
+        {onCheckDelivery && <Button onClick={onCheckDelivery}>Check delivery</Button>}
       </div>
     </div>
   );

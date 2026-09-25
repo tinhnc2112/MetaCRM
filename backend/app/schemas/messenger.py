@@ -72,3 +72,12 @@ class MarkConversationReadResponse(BaseModel):
 
 class SendMessageRequest(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
+
+
+class OutboundSendStatus(BaseModel):
+    operation_id: str
+    status: str
+
+
+class ReconcileOutboundSendRequest(BaseModel):
+    mid: str = Field(min_length=1, max_length=255)

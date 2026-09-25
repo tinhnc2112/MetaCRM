@@ -7,8 +7,10 @@ Covers:
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from app.core.config import get_settings
@@ -609,3 +611,213 @@ class TestListMessages:
         body = response.json()
         assert body["meta"]["total"] == 0
         assert body["items"] == []
+
+
+def _outbound_case(session: Session) -> tuple[User, Conversation]:
+    user, _ = _get_users(session)
+    page = _make_page(session, user, f"outbound-{uuid4().hex}")
+    page.access_token_encrypted = TokenCipher(TEST_TOKEN_KEY).encrypt("test-page-token")
+    session.commit()
+    return user, _make_conversation(session, page, f"psid-{uuid4().hex}")
+
+
+def test_outbound_send_replay_preserves_message_contract_and_calls_graph_once(
+    client: TestClient, session: Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models.messenger import OutboundSend
+    from app.services.facebook.client import FacebookGraphClient
+
+    user, conversation = _outbound_case(session)
+    calls: list[int] = []
+
+    def send(_self, _path, _data):
+        calls.append(1)
+        return {"message_id": "m5-success"}
+
+    monkeypatch.setattr(FacebookGraphClient, "post", send)
+    key = str(uuid4())
+    url = f"/api/v1/facebook/conversations/{conversation.uuid}/messages"
+    headers = {**_auth(user), "Idempotency-Key": key}
+    first = client.post(url, headers=headers, json={"text": "Hello"})
+    second = client.post(url, headers=headers, json={"text": "Hello"})
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert first.json()["mid"] == "m5-success"
+    assert calls == [1]
+    assert session.query(Message).count() == 1
+    attempt = session.query(OutboundSend).one()
+    assert attempt.status == "sent" and attempt.message_id == session.query(Message).one().id
+    assert attempt.text_hash == hashlib.sha256(b"Hello").hexdigest()
+    assert client.post(url, headers={**_auth(user), "Idempotency-Key": key},
+                       json={"text": "Different"}).status_code == 409
+    assert client.post(url, headers={**_auth(user), "Idempotency-Key": "invalid"},
+                       json={"text": "Hello"}).status_code == 422
+    assert calls == [1]
+
+
+def test_unknown_provider_outcome_blocks_resend_and_reconciles_only_matching_page_echo(
+    client: TestClient, session: Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models.messenger import OutboundSend
+    from app.services.facebook.client import FacebookGraphClient
+    from app.services.facebook.exceptions import FacebookApiError
+
+    user, conversation = _outbound_case(session)
+    page = session.get(FacebookPage, conversation.facebook_page_id)
+    assert page is not None
+    other = _make_conversation(session, page, f"other-{uuid4().hex}")
+    calls: list[int] = []
+
+    def timeout(_self, _path, _data):
+        calls.append(1)
+        raise FacebookApiError("Facebook API request failed")
+
+    monkeypatch.setattr(FacebookGraphClient, "post", timeout)
+    key = str(uuid4())
+    url = f"/api/v1/facebook/conversations/{conversation.uuid}/messages"
+    headers = {**_auth(user), "Idempotency-Key": key}
+    first = client.post(url, headers=headers, json={"text": "Uncertain"})
+    assert first.status_code == 409
+    assert first.json()["detail"] == {"code": "OUTBOUND_SEND_UNCERTAIN", "operation_id": key}
+    assert client.post(url, headers=headers, json={"text": "Uncertain"}).status_code == 409
+    assert calls == [1] and session.query(Message).count() == 0
+    assert session.query(OutboundSend).one().status == "uncertain"
+    status_url = f"/api/v1/facebook/conversations/{conversation.uuid}/outbound-sends/{key}"
+    assert client.get(status_url, headers=_auth(user)).json()["status"] == "uncertain"
+    assert client.get(status_url).status_code == 401
+    _, bob = _get_users(session)
+    assert client.get(status_url, headers=_auth(bob)).status_code == 404
+    assert client.post(f"{status_url}/reconcile", headers=_auth(bob),
+                       json={"mid": "observed-echo"}).status_code == 404
+    assert client.get(f"/api/v1/facebook/conversations/{other.uuid}/outbound-sends/{key}",
+                      headers=_auth(user)).status_code == 404
+    reconcile = f"{status_url}/reconcile"
+    assert client.post(reconcile, headers=_auth(user), json={"mid": "missing"}).status_code == 409
+    _make_message(session, other, "wrong-conversation", text="Uncertain", is_from_page=True)
+    assert client.post(reconcile, headers=_auth(user),
+                       json={"mid": "wrong-conversation"}).status_code == 409
+    _make_message(session, conversation, "observed-echo", text="Uncertain", is_from_page=True)
+    assert client.post(reconcile, headers=_auth(user),
+                       json={"mid": "observed-echo"}).json()["status"] == "sent"
+    replay = client.post(url, headers=headers, json={"text": "Uncertain"})
+    assert replay.json()["mid"] == "observed-echo"
+    assert calls == [1]
+    second_key = str(uuid4())
+    second = client.post(url, headers={**_auth(user), "Idempotency-Key": second_key},
+                         json={"text": "Uncertain"})
+    assert second.status_code == 409
+    assert client.post(f"/api/v1/facebook/conversations/{conversation.uuid}/outbound-sends/"
+                       f"{second_key}/reconcile", headers=_auth(user),
+                       json={"mid": "observed-echo"}).status_code == 409
+
+
+def test_provider_success_database_failure_remains_reserved_and_never_resends(
+    session: Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models.messenger import OutboundSend
+    from app.services.facebook.client import FacebookGraphClient
+    from app.services.facebook.conversations import (
+        OutboundSendUncertainError,
+        send_message_to_conversation,
+    )
+    from sqlalchemy.exc import OperationalError
+
+    _, conversation = _outbound_case(session)
+    calls: list[int] = []
+
+    def sent(_self, _path, _data):
+        calls.append(1)
+        return {"message_id": "m5-db-failure"}
+
+    monkeypatch.setattr(FacebookGraphClient, "post", sent)
+    original_commit = session.commit
+    commits = 0
+
+    def fail_once():
+        nonlocal commits
+        commits += 1
+        if commits == 2:
+            raise OperationalError("commit", {}, Exception("simulated database failure"))
+        original_commit()
+
+    monkeypatch.setattr(session, "commit", fail_once)
+    operation_id = uuid4()
+    with pytest.raises(OutboundSendUncertainError):
+        send_message_to_conversation(
+            session, conversation, text="May have arrived", operation_id=operation_id
+        )
+    assert calls == [1]
+    assert session.query(Message).filter_by(mid="m5-db-failure").count() == 0
+    assert session.query(OutboundSend).one().status == "uncertain"
+    with pytest.raises(OutboundSendUncertainError):
+        send_message_to_conversation(
+            session, conversation, text="May have arrived", operation_id=operation_id
+        )
+    assert calls == [1]
+
+
+def test_crashed_pending_reservation_is_reported_uncertain_without_graph_call(
+    client: TestClient, session: Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models.messenger import OutboundSend
+    from app.services.facebook.client import FacebookGraphClient
+
+    user, conversation = _outbound_case(session)
+    key = uuid4()
+    session.add(OutboundSend(
+        operation_id=key, conversation_id=conversation.id,
+        text_hash=hashlib.sha256(b"Pending send").hexdigest(),
+    ))
+    session.commit()
+    def unexpected(_self, _path, _data):
+        raise AssertionError("A pending reservation must never call Graph again")
+    monkeypatch.setattr(FacebookGraphClient, "post", unexpected)
+    base = f"/api/v1/facebook/conversations/{conversation.uuid}"
+    response = client.post(f"{base}/messages", headers={**_auth(user), "Idempotency-Key": str(key)},
+                           json={"text": "Pending send"})
+    assert response.status_code == 409
+    status_response = client.get(f"{base}/outbound-sends/{key}", headers=_auth(user))
+    assert status_response.json()["status"] == "uncertain"
+
+
+def test_permission_rejection_preserves_403_and_does_not_resend(
+    client: TestClient, session: Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.facebook.client import FacebookGraphClient
+    from app.services.facebook.exceptions import FacebookPermissionError
+
+    user, conversation = _outbound_case(session)
+    calls: list[int] = []
+
+    def denied(_self, _path, _data):
+        calls.append(1)
+        raise FacebookPermissionError("Facebook permission was denied")
+
+    monkeypatch.setattr(FacebookGraphClient, "post", denied)
+    key = str(uuid4())
+    base = f"/api/v1/facebook/conversations/{conversation.uuid}"
+    headers = {**_auth(user), "Idempotency-Key": key}
+    response = client.post(f"{base}/messages", headers=headers, json={"text": "Hello"})
+    assert response.status_code == 403
+    status_response = client.get(f"{base}/outbound-sends/{key}", headers=_auth(user))
+    assert status_response.json()["status"] == "rejected"
+    retry = client.post(f"{base}/messages", headers=headers, json={"text": "Hello"})
+    assert retry.status_code == 409
+    assert calls == [1]
+
+
+def test_legacy_send_without_key_keeps_success_response_shape(
+    client: TestClient, session: Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models.messenger import OutboundSend
+    from app.services.facebook.client import FacebookGraphClient
+
+    user, conversation = _outbound_case(session)
+    monkeypatch.setattr(FacebookGraphClient, "post", lambda *_: {"message_id": "m5-legacy"})
+    response = client.post(
+        f"/api/v1/facebook/conversations/{conversation.uuid}/messages",
+        headers=_auth(user), json={"text": "Legacy"},
+    )
+    assert response.status_code == 200
+    assert response.json()["mid"] == "m5-legacy"
+    assert session.query(OutboundSend).one().status == "sent"

@@ -28,4 +28,21 @@ production Order/Inventory behavior or schema changed without a demonstrated
 defect. Run the new MySQL gate before treating these InnoDB invariants as
 verified; SQLite cannot establish row-lock behavior.
 
+M5: Outbound sends reserve a unique client operation UUID in `outbound_sends`
+and commit it before Graph I/O. The reservation keeps a text digest for
+replay/reconciliation checks instead of another copy of customer content.
+The provider call never holds a database lock.
+An unknown network outcome, missing provider message ID, or local persistence
+failure leaves the reservation uncertain, so replaying the same key cannot
+call Graph again. On success, the Message and `sent` state commit together.
+An authorized Page owner may inspect status and reconcile an uncertain send
+only with a matching committed Page echo (`mid`, conversation, text); that
+operation does not resend. `pending` from a crash is exposed as uncertain.
+Old successful POST responses remain Message-shaped; the desktop supplies a
+key and blocks another send while delivery is unresolved. Legacy callers
+without a key can still make an independent new attempt, so they must adopt
+the key for safe network retries. Downgrading `0028` loses unresolved
+reservations: reconcile them before schema rollback; leave the table in place
+while rolling back application code if such work remains.
+
 MySQL row locks and unique indexes are the correctness mechanisms; SQLite `StaticPool` tests exercise functional behavior but do not demonstrate InnoDB lock ordering or retry behavior. Avoid network I/O while holding DB locks. Schema migration is a separate deployment operation; do not assume a MySQL DDL migration rolls back with an application transaction. Run migration/backfill validation against a disposable MySQL instance before deployment; no live data was changed in this audit.
