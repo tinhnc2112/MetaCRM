@@ -326,7 +326,21 @@ def upsert_message(
         fb_timestamp_ms=event.fb_timestamp_ms,
         sent_at=sent_at,
     )
-    session.add(message)
+    try:
+        # Flush inside a savepoint: the initial lookup can race another
+        # delivery, and an InnoDB uniqueness failure must not poison the
+        # surrounding webhook transaction.
+        with session.begin_nested():
+            session.add(message)
+            session.flush()
+    except IntegrityError:
+        # A locking read sees the committed winner even at InnoDB's default
+        # REPEATABLE READ isolation after an earlier snapshot lookup.
+        winner = session.query(Message).filter(Message.mid == event.mid).with_for_update().first()
+        if winner is None:
+            raise  # another constraint failed; do not mask a real error
+        logger.info("facebook webhook ignored reason=duplicate_mid")
+        return winner, False
     return message, True
 
 

@@ -13,4 +13,11 @@ Database source of truth: MySQL models registered through `app/db/base.py`, migr
 | Shipment transition · `shipments.py:233-435` | Shipment status, event and derived Order shipping status committed together. | Check cancel/ship races under Order and Shipment locks; do not mutate an Order address after shipment snapshot. |
 | Carrier operation · `waybills.py:202-293` | Pending operation reserved and committed; no real provider called. | If provider added, separate reservation, call, finalize/reconcile; unknown result must not create duplicate remote waybills. |
 
+M3: Message insertion now flushes within a savepoint. A competing delivery
+that loses the unique `mid` race reads the committed winner with a locking
+read, preserving the outer webhook transaction. Only the winner is marked new
+for the post-commit WebSocket notification. The guarded disposable MySQL test
+proves this race under InnoDB; SQLite tests cover signed ingress and ordinary
+duplicate delivery.
+
 MySQL row locks and unique indexes are the correctness mechanisms; SQLite `StaticPool` tests exercise functional behavior but do not demonstrate InnoDB lock ordering or retry behavior. Avoid network I/O while holding DB locks. Schema migration is a separate deployment operation; do not assume a MySQL DDL migration rolls back with an application transaction. Run migration/backfill validation against a disposable MySQL instance before deployment; no live data was changed in this audit.
