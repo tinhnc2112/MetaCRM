@@ -13,6 +13,7 @@ from app.services.facebook.messenger import (
     RawMessageEvent,
     process_webhook_events,
     upsert_conversation,
+    upsert_message,
 )
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.engine import make_url
@@ -38,19 +39,26 @@ def test_mysql_parallel_duplicate_mid_has_one_committed_winner() -> None:
     psid, mid = f"m3-{uuid4().hex}", f"m3-{uuid4().hex}"
     try:
         with Session(engine) as session:
-            # Precreate the thread to isolate the mid collision from the
-            # separate conversation/customer identity insertion race.
+            # Resolve CustomerIdentity before racing message insertions.
+            # Full webhook processing refreshes its last_seen_at and flushes
+            # the identity row before upsert_message; that row lock correctly
+            # serializes deliveries for this PSID, so a barrier at Message.add
+            # in the full flow deadlocks the test, not the production service.
             page = session.scalar(select(FacebookPage).where(FacebookPage.page_id == "e2e-page-a"))
             assert page is not None
-            upsert_conversation(session, page, psid, None)
+            conversation = upsert_conversation(session, page, psid, None)
             session.commit()
+            conversation_id = conversation.id
 
         barrier = Barrier(2)
+        insert_attempts = []
+
         class RacingSession(Session):
             def add(self, instance, _warn=True):
-                # Both deliveries have already observed no mid before either
-                # may INSERT. This actually exercises the unique-key loser.
+                # Both sessions have passed the no-mid lookup before either
+                # inserts. The unique constraint must arbitrate the collision.
                 if isinstance(instance, Message) and instance.mid == mid:
+                    insert_attempts.append(instance.mid)
                     barrier.wait(timeout=15)
                 return super().add(instance, _warn=_warn)
 
@@ -58,15 +66,40 @@ def test_mysql_parallel_duplicate_mid_has_one_committed_winner() -> None:
 
         def deliver() -> bool:
             with RacingSession(engine) as session:
-                result = process_webhook_events(session, [event])
-                return result[0][2]
+                thread = session.get(Conversation, conversation_id)
+                assert thread is not None
+                message, created = upsert_message(session, thread, event)
+                session.commit()  # the loser must still have a usable transaction
+                session.refresh(message)
+                return created
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = [pool.submit(deliver) for _ in range(2)]
             assert sorted(f.result(timeout=30) for f in results) == [False, True]
+        assert len(insert_attempts) == 2
         with Session(engine) as session:
-            assert session.scalar(select(Message).where(Message.mid == mid)) is not None
             assert len(session.scalars(select(Message).where(Message.mid == mid)).all()) == 1
+
+        # Exercise the full webhook transaction too. Its identity profile
+        # update may serialize the two deliveries before MID insertion, but
+        # both must commit safely and only one may report a new Message.
+        delivery_mid = f"m3-{uuid4().hex}"
+        full_event = RawMessageEvent(
+            "e2e-page-a", psid, delivery_mid, "message", False, "hello", None, None
+        )
+        start = Barrier(2)
+
+        def receive() -> bool:
+            with Session(engine) as session:
+                start.wait(timeout=15)
+                return process_webhook_events(session, [full_event])[0][2]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(receive) for _ in range(2)]
+            assert sorted(f.result(timeout=30) for f in futures) == [False, True]
+        with Session(engine) as session:
+            committed = session.scalars(select(Message).where(Message.mid == delivery_mid)).all()
+            assert len(committed) == 1
     finally:
         with Session(engine) as session:
             conversations = session.scalars(

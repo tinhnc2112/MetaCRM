@@ -17,8 +17,11 @@ M3: Message insertion now flushes within a savepoint. A competing delivery
 that loses the unique `mid` race reads the committed winner with a locking
 read, preserving the outer webhook transaction. Only the winner is marked new
 for the post-commit WebSocket notification. The guarded disposable MySQL test
-proves this race under InnoDB; SQLite tests cover signed ingress and ordinary
-duplicate delivery.
+races two `upsert_message` calls after the conversation is established to
+exercise the unique-key loser and its enclosing transaction. It separately
+checks parallel full webhook deliveries: their earlier CustomerIdentity
+profile update can lock the shared identity row and serialize MID insertion.
+SQLite tests cover signed ingress and ordinary duplicate delivery.
 
 M4: The guarded MySQL suite exercises simultaneous confirmation/cancellation
 of one Order, concurrent stock adjustment versus confirmation, and a simulated
