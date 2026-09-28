@@ -143,7 +143,7 @@ def seed(environment: dict[str, str]) -> dict[str, object]:
 
     get_settings.cache_clear()
     from app.db.session import SessionLocal, dispose_engine
-    from app.models.auth import User
+    from app.models.auth import Role, User
     from app.models.customer_core import Customer, CustomerIdentity
     from app.models.facebook import FacebookAccount, FacebookPage, UserPageContext
     from app.models.messenger import Conversation
@@ -153,12 +153,23 @@ def seed(environment: dict[str, str]) -> dict[str, object]:
     from app.utils.password import hash_password
 
     with SessionLocal() as session:
+        staff_role = session.query(Role).filter(Role.name == "staff").one_or_none()
+        if staff_role is None:
+            staff_role = Role(
+                name="staff",
+                description="Standard staff access",
+                is_active=True,
+            )
+            session.add(staff_role)
+            session.flush()
+
         user = User(
             username=E2E_USERNAME,
             email=E2E_EMAIL,
             password_hash=hash_password(E2E_PASSWORD),
             full_name="E2E Operator",
             is_active=True,
+            roles=[staff_role],
         )
         session.add(user)
         session.flush()
