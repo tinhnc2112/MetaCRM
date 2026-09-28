@@ -1,5 +1,10 @@
 # API Contract
 
+This is a proposed product contract, not the currently deployed HTTP API.
+Routes listed below (including `/api/*` and J&T webhooks) must not be treated
+as implemented. For the actual FastAPI routes and authorization contract see
+[the active API contract](architecture/api-contract.md).
+
 Auth:
 POST /api/auth/login
 POST /api/auth/logout

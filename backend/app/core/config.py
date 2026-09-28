@@ -24,7 +24,6 @@ class Settings(BaseModel):
     debug: bool = Field(default=False, validation_alias=AliasChoices("APP_DEBUG", "DEBUG"))
     host: str = Field(default="0.0.0.0", validation_alias=AliasChoices("APP_HOST", "HOST"))
     port: int = Field(default=8000, validation_alias=AliasChoices("APP_PORT", "PORT"))
-    api_v1_prefix: str = Field(default="/api/v1", validation_alias="API_V1_PREFIX")
     secret_key: str = Field(default="development-only-change-me", validation_alias="SECRET_KEY")
     jwt_algorithm: str = Field(default="HS256", validation_alias="JWT_ALGORITHM")
     access_token_expire_minutes: int = Field(
