@@ -6,7 +6,9 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from app.db.base import Base
-from app.models.customer_core import Customer  # noqa: F401 - needed for relationship() string resolution
+from app.models.customer_core import (
+    Customer,  # noqa: F401 - needed for relationship() string resolution
+)
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -100,3 +102,27 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+
+class OutboundSend(Base):
+    """Durable reservation for a Graph send; pending is an uncertain outcome."""
+
+    __tablename__ = "outbound_sends"
+    __table_args__ = (Index("ix_outbound_sends_conversation_id", "conversation_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    operation_id: Mapped[UUID] = mapped_column(unique=True, nullable=False)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("facebook_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("facebook_messages.id", ondelete="SET NULL"), unique=True, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )

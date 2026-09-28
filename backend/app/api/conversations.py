@@ -16,20 +16,30 @@ from app.schemas.messenger import (
     MarkConversationReadResponse,
     MessageListResponse,
     MessageResponse,
+    OutboundSendStatus,
     PaginationMeta,
+    ReconcileOutboundSendRequest,
     SendMessageRequest,
 )
 from app.services.facebook.conversations import (
+    OutboundSendConflictError,
+    OutboundSendUncertainError,
     conversation_last_message_preview,
     get_conversation_for_user,
+    get_outbound_send,
     list_conversations,
     list_messages,
     mark_conversation_read,
+    reconcile_outbound_send,
     send_message_to_conversation,
     unread_count_for_conversation,
 )
-from app.services.facebook.exceptions import FacebookApiError, FacebookIntegrationError, FacebookPermissionError
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from app.services.facebook.exceptions import (
+    FacebookApiError,
+    FacebookIntegrationError,
+    FacebookPermissionError,
+)
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/facebook/conversations", tags=["conversations"])
@@ -152,6 +162,7 @@ async def send_message_endpoint(
     current_user: Annotated[User, Depends(require_active_user)],
     session: Annotated[Session, Depends(get_db_session)],
     request: Request,
+    idempotency_key: Annotated[UUID | None, Header(alias="Idempotency-Key")] = None,
 ) -> MessageResponse:
     try:
         UUID(conversation_id)
@@ -169,7 +180,15 @@ async def send_message_endpoint(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="text is too long")
 
     try:
-        message, was_created = send_message_to_conversation(session, conversation, text=text)
+        message, was_created = send_message_to_conversation(
+            session, conversation, text=text, operation_id=idempotency_key,
+        )
+    except OutboundSendUncertainError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "OUTBOUND_SEND_UNCERTAIN", "operation_id": str(exc.operation_id),
+        }) from None
+    except OutboundSendConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     except FacebookPermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except FacebookApiError as exc:
@@ -200,3 +219,47 @@ async def send_message_endpoint(
             # Broadcast is best-effort; the send already succeeded and was persisted.
             pass
     return _serialize_message(message, conversation)
+
+
+def _outbound_status(attempt) -> OutboundSendStatus:
+    return OutboundSendStatus(
+        operation_id=str(attempt.operation_id),
+        status="uncertain" if attempt.status == "pending" else attempt.status,
+    )
+
+
+@router.get("/{conversation_id}/outbound-sends/{operation_id}", response_model=OutboundSendStatus)
+def outbound_send_status_endpoint(
+    conversation_id: str,
+    operation_id: UUID,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> OutboundSendStatus:
+    conversation = get_conversation_for_user(session, current_user, conversation_id)
+    attempt = get_outbound_send(session, conversation, operation_id) if conversation else None
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="Outbound send not found")
+    return _outbound_status(attempt)
+
+
+@router.post(
+    "/{conversation_id}/outbound-sends/{operation_id}/reconcile", response_model=OutboundSendStatus,
+)
+def reconcile_outbound_send_endpoint(
+    conversation_id: str,
+    operation_id: UUID,
+    payload: ReconcileOutboundSendRequest,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> OutboundSendStatus:
+    conversation = get_conversation_for_user(session, current_user, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Outbound send not found")
+    try:
+        attempt = reconcile_outbound_send(session, conversation, operation_id, payload.mid)
+    except OutboundSendConflictError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="Outbound send not found")
+    return _outbound_status(attempt)

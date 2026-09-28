@@ -12,6 +12,15 @@ Audit scope: checked-in backend, Electron renderer, extension and configuration 
 M2A: `Settings` rejects blank, example, development-default, short and trivially repeated signing keys in staging and production before FastAPI can serve. Supply a unique random `SECRET_KEY` (at least 32 characters) through deployment configuration. Development/test retain the local default. Rotating this key invalidates issued JWTs; plan a re-login window and keep Facebook token encryption key rotation separate.
 
 M2B: Migration `0027_refresh_sessions` adds a durable per-refresh-credential row with a unique non-secret JWT `jti`, user ownership, expiry, consumed and revoked timestamps; no plaintext refresh JWT is stored. Login commits this row before returning tokens. Refresh atomically marks the old row consumed and inserts the replacement in one transaction; a second concurrent rotation cannot succeed on InnoDB. `POST /api/v1/auth/logout` accepts the existing refresh-token request shape and revokes that credential. Desktop sign-out invokes it, then clears local memory; if the server cannot be reached, it warns that remote revocation is unconfirmed. Access JWTs remain usable until their existing expiry. Legacy refresh JWTs issued before this migration have no `jti`/row and require re-login; apply the migration before running M2B code. Downgrading drops active refresh state and requires a deliberate re-login plan. MySQL concurrency and migration upgrade/downgrade require a disposable database before deployment.
+
+M5: Outbound Messenger requests reserve a durable UUID before calling Graph.
+The reservation stores a SHA-256 digest of message text, not a second plaintext
+copy or a Page credential. An ambiguous result remains uncertain and blocks
+reuse of that UUID. Only an authenticated Page owner can read status or bind
+the reservation to an existing matching Page echo. Desktop retains an
+unresolved send and disables further sends until status is checked. Legacy
+callers without an idempotency key retain their existing POST success shape,
+but must provide a stable key to avoid duplicate sends on client retries.
 | WebSocket: authenticated page-scoped subprotocol (`api/ws.py`), generic rejection. | Reauthorize long-lived sessions at reconnect and define expiry/role-change behavior. No query-string access token. In-memory fan-out offers no durable delivery. |
 | Database and local runtime: MySQL URL validator, Fernet-protected Facebook tokens; `.env` ignored. | Enforce least-privilege DB account, TLS/backup/restore controls by deployment; do not echo SQL with sensitive parameters in production. Carrier operation request snapshots include recipient PII (`waybills.py:safe_request_snapshot`) and need retention/access policy. |
 

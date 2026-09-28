@@ -13,4 +13,39 @@ Database source of truth: MySQL models registered through `app/db/base.py`, migr
 | Shipment transition · `shipments.py:233-435` | Shipment status, event and derived Order shipping status committed together. | Check cancel/ship races under Order and Shipment locks; do not mutate an Order address after shipment snapshot. |
 | Carrier operation · `waybills.py:202-293` | Pending operation reserved and committed; no real provider called. | If provider added, separate reservation, call, finalize/reconcile; unknown result must not create duplicate remote waybills. |
 
+M3: Message insertion now flushes within a savepoint. A competing delivery
+that loses the unique `mid` race reads the committed winner with a locking
+read, preserving the outer webhook transaction. Only the winner is marked new
+for the post-commit WebSocket notification. The guarded disposable MySQL test
+races two `upsert_message` calls after the conversation is established to
+exercise the unique-key loser and its enclosing transaction. It separately
+checks parallel full webhook deliveries: their earlier CustomerIdentity
+profile update can lock the shared identity row and serialize MID insertion.
+SQLite tests cover signed ingress and ordinary duplicate delivery.
+
+M4: The guarded MySQL suite exercises simultaneous confirmation/cancellation
+of one Order, concurrent stock adjustment versus confirmation, and a simulated
+deadlock during the balance update. It checks the committed balance, unique
+per-item movements, transition events and rollback before a safe retry. No
+production Order/Inventory behavior or schema changed without a demonstrated
+defect. Run the new MySQL gate before treating these InnoDB invariants as
+verified; SQLite cannot establish row-lock behavior.
+
+M5: Outbound sends reserve a unique client operation UUID in `outbound_sends`
+and commit it before Graph I/O. The reservation keeps a text digest for
+replay/reconciliation checks instead of another copy of customer content.
+The provider call never holds a database lock.
+An unknown network outcome, missing provider message ID, or local persistence
+failure leaves the reservation uncertain, so replaying the same key cannot
+call Graph again. On success, the Message and `sent` state commit together.
+An authorized Page owner may inspect status and reconcile an uncertain send
+only with a matching committed Page echo (`mid`, conversation, text); that
+operation does not resend. `pending` from a crash is exposed as uncertain.
+Old successful POST responses remain Message-shaped; the desktop supplies a
+key and blocks another send while delivery is unresolved. Legacy callers
+without a key can still make an independent new attempt, so they must adopt
+the key for safe network retries. Downgrading `0028` loses unresolved
+reservations: reconcile them before schema rollback; leave the table in place
+while rolling back application code if such work remains.
+
 MySQL row locks and unique indexes are the correctness mechanisms; SQLite `StaticPool` tests exercise functional behavior but do not demonstrate InnoDB lock ordering or retry behavior. Avoid network I/O while holding DB locks. Schema migration is a separate deployment operation; do not assume a MySQL DDL migration rolls back with an application transaction. Run migration/backfill validation against a disposable MySQL instance before deployment; no live data was changed in this audit.
