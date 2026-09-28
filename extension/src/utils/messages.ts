@@ -3,8 +3,7 @@ import type { ExtensionMessage, ExtensionResponse } from "../types/messages";
 const messageTypes = new Set([
   "PING",
   "GET_CONNECTION_STATUS",
-  "CONNECT_BACKEND",
-  "DISCONNECT_BACKEND",
+  "REFRESH_BACKEND_HEALTH",
   "CONTENT_SCRIPT_READY",
 ]);
 

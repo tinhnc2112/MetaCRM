@@ -55,7 +55,9 @@ export function MessengerInboxPage() {
   const conversationsQuery = useQuery({
     queryKey: ["messenger-conversations", currentPageId],
     queryFn: () => listConversations(currentPageId ?? undefined),
-    enabled: Boolean(currentPageId)
+    enabled: Boolean(currentPageId),
+    // API data is authoritative even if the in-process WebSocket misses an event.
+    refetchInterval: 30_000
   });
 
   const selectedConversation = useMemo(
@@ -66,7 +68,8 @@ export function MessengerInboxPage() {
   const messagesQuery = useQuery({
     queryKey: ["messenger-messages", currentPageId, selectedConversationId],
     queryFn: () => listMessages(selectedConversationId as string),
-    enabled: Boolean(selectedConversationId)
+    enabled: Boolean(selectedConversationId),
+    refetchInterval: 30_000
   });
 
   const customerProfileQuery = useQuery({
@@ -223,6 +226,12 @@ export function MessengerInboxPage() {
     wsUrl.searchParams.set("page_id", currentPageId);
 
     const socket = new WebSocket(wsUrl.toString(), ["metacrm", `bearer.${accessToken}`]);
+    socket.addEventListener("open", () => {
+      void queryClient.invalidateQueries({ queryKey: ["messenger-conversations", currentPageId] });
+      if (selectedConversationId) {
+        void queryClient.invalidateQueries({ queryKey: ["messenger-messages", currentPageId, selectedConversationId] });
+      }
+    });
     socket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") {
         return;

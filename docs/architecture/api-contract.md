@@ -148,8 +148,8 @@ The WebSocket `/api/v1/ws?page_id=<owned Page ID>` requires subprotocols
 small Page-scoped notifications after database commits. The database/API is
 authoritative: clients must fetch state again on reconnect, missed notification
 or application reload. The connection manager is in-process only; it provides
-no delivery guarantee across multiple backend workers. See the M8 client
-behavior notes in the architecture docs for the extension's health-only status.
+no delivery guarantee across multiple backend workers. See [realtime behavior](realtime-contract.md) for desktop fallback and the
+extension's health-only status.
 
 ## Development and migration
 
