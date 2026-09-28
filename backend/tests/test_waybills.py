@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
-from app.models.auth import User
+from app.models.auth import Role, User
 from app.models.carriers import CarrierAccount, CarrierOperation, ExternalWaybill
 from app.models.customer_core import Customer
 from app.models.facebook import FacebookAccount, FacebookPage
@@ -85,10 +85,12 @@ def session(monkeypatch: pytest.MonkeyPatch) -> Generator[Session]:
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
     Base.metadata.create_all(engine)
+    admin_role = Role(name="admin")
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     db = factory()
     db.add(
         User(
+            roles=[admin_role],
             username="waybill_operator",
             email="waybill_operator@example.com",
             password_hash=hash_password("pw"),

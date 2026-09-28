@@ -8,7 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 from app.api.webhook import read_and_log_webhook_request
 from app.core.config import get_settings
 from app.db.session import get_db_session
-from app.dependencies.auth import require_active_user
+from app.dependencies.auth import require_active_user, require_admin
 from app.models.auth import User
 from app.models.facebook import FacebookPage
 from app.schemas.facebook import (
@@ -219,7 +219,7 @@ def account_page_data(accounts_response: dict[str, Any], page_id: str) -> dict[s
 
 @router.get("/auth/url", response_model=FacebookAuthUrlResponse)
 def facebook_auth_url(
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> FacebookAuthUrlResponse:
     try:
@@ -243,6 +243,7 @@ def facebook_auth_callback(
 
     try:
         user = validate_oauth_state(session, state)
+        require_admin(user)
         token = exchange_code_for_token(code)
         facebook_user = get_facebook_user_info(token.access_token)
         account = upsert_facebook_account(session, user, facebook_user, token)
@@ -256,7 +257,7 @@ def facebook_auth_callback(
 @router.get("/debug/subscribed-apps/{page_id}")
 def debug_subscribed_apps(
     page_id: str,
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> dict[str, Any]:
     settings = get_settings()
@@ -283,7 +284,7 @@ def debug_subscribed_apps(
 
 @router.get("/debug/token-scopes")
 def debug_token_scopes(
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> dict[str, Any]:
     settings = get_settings()
@@ -324,7 +325,7 @@ def debug_token_scopes(
 @router.get("/debug/page-permissions/{page_id}")
 def debug_page_permissions(
     page_id: str,
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> dict[str, Any]:
     try:
@@ -371,7 +372,7 @@ def debug_page_permissions(
 @router.get("/debug/page-info/{page_id}")
 def debug_page_info(
     page_id: str,
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> dict[str, Any]:
     try:
@@ -409,7 +410,7 @@ def debug_page_info(
 
 @router.get("/debug/app-mode")
 def debug_app_mode(
-    _current_user: Annotated[User, Depends(require_active_user)],
+    _current_user: Annotated[User, Depends(require_admin)],
 ) -> dict[str, Any]:
     settings = get_settings()
     if not settings.facebook_app_id or not settings.facebook_app_secret:
@@ -440,7 +441,7 @@ def debug_app_mode(
 
 @router.get("/debug/app-info")
 def debug_app_info(
-    _current_user: Annotated[User, Depends(require_active_user)],
+    _current_user: Annotated[User, Depends(require_admin)],
 ) -> dict[str, Any]:
     settings = get_settings()
     if not settings.facebook_app_id or not settings.facebook_app_secret:
@@ -483,7 +484,7 @@ def debug_app_info(
 
 @router.get("/debug/webhook-subscriptions")
 def debug_webhook_subscriptions(
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> dict[str, Any]:
     settings = get_settings()
@@ -625,7 +626,7 @@ def debug_webhook_subscriptions(
 
 @router.get("/debug/messenger-diagnostics")
 def debug_messenger_diagnostics(
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> dict[str, Any]:
     settings = get_settings()
@@ -906,7 +907,7 @@ def debug_messenger_diagnostics(
 @router.get("/debug/page-token/{page_id}")
 def debug_page_token(
     page_id: str,
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> dict[str, Any]:
     try:
@@ -925,7 +926,7 @@ def debug_page_token(
 @router.post("/debug/resubscribe/{page_id}")
 def debug_resubscribe(
     page_id: str,
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> dict[str, Any]:
     try:
@@ -966,7 +967,7 @@ def debug_resubscribe(
 @router.get("/debug/webhook-health")
 def debug_webhook_health(
     request: Request,
-    _current_user: Annotated[User, Depends(require_active_user)],
+    _current_user: Annotated[User, Depends(require_admin)],
 ) -> dict[str, Any]:
     settings = get_settings()
     return {
@@ -980,7 +981,7 @@ def debug_webhook_health(
 @router.post("/debug/webhook-selftest")
 async def debug_webhook_selftest(
     request: Request,
-    _current_user: Annotated[User, Depends(require_active_user)],
+    _current_user: Annotated[User, Depends(require_admin)],
 ) -> dict[str, Any]:
     request_id, signature_header, body = await read_and_log_webhook_request(request)
     logger.info(
@@ -999,7 +1000,7 @@ async def debug_webhook_selftest(
 
 @router.post("/pages/sync", response_model=FacebookPageListResponse)
 def sync_pages(
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> FacebookPageListResponse:
     account = get_active_account_for_user(session, current_user)

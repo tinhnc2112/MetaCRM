@@ -6,11 +6,11 @@ import json
 from typing import Annotated
 
 from app.db.session import get_db_session
-from app.dependencies.auth import resolve_user_from_access_token
+from app.dependencies.auth import require_active_user, resolve_user_from_access_token
 from app.services.facebook.exceptions import FacebookPageUnavailableError
 from app.services.facebook.pages import get_page_for_user
 from app.websocket.manager import ConnectionManager
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.orm import Session
 
 router = APIRouter(tags=["websocket"])
@@ -73,7 +73,13 @@ async def websocket_endpoint(
         return
 
     user = resolve_user_from_access_token(session, access_token)
-    if user is None or not user.is_active:
+    if user is None:
+        await _reject_connection(websocket)
+        return
+
+    try:
+        require_active_user(user)
+    except HTTPException:
         await _reject_connection(websocket)
         return
 

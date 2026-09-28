@@ -10,7 +10,7 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
-from app.models.auth import User
+from app.models.auth import Role, User
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation, Message
 from app.services.facebook.crypto import TokenCipher
@@ -33,16 +33,19 @@ def session(monkeypatch: pytest.MonkeyPatch) -> Generator[Session]:
 
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
+    admin_role = Role(name="admin")
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     db = factory()
 
     alice = User(
+        roles=[admin_role],
         username="alice_segments",
         email="alice_segments@example.com",
         password_hash=hash_password("pw"),
         full_name="Alice Segments",
     )
     bob = User(
+        roles=[admin_role],
         username="bob_segments",
         email="bob_segments@example.com",
         password_hash=hash_password("pw"),

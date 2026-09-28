@@ -16,7 +16,7 @@ from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
 from app.middleware.routing import FACEBOOK_WEBHOOK_PATH
-from app.models.auth import User
+from app.models.auth import Role, User
 from app.models.customer_core import Customer, CustomerIdentity
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.messenger import Conversation, Message
@@ -77,10 +77,12 @@ def session(monkeypatch: pytest.MonkeyPatch) -> Generator[Session]:
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
     Base.metadata.create_all(engine)
+    admin_role = Role(name="admin")
     local_session = sessionmaker(bind=engine, expire_on_commit=False)
     db = local_session()
 
     user = User(
+        roles=[admin_role],
         username="alice",
         email="alice@example.com",
         password_hash="hashed",
@@ -156,6 +158,7 @@ def _access_token(session: Session, username: str = "alice") -> str:
 
 def _add_user_page(session: Session, *, username: str, page_id: str) -> tuple[User, FacebookPage]:
     user = User(
+        roles=[session.query(Role).filter(Role.name == "admin").one()],
         username=username,
         email=f"{username}@example.com",
         password_hash="hashed",

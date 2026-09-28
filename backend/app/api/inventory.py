@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from app.db.session import get_db_session
-from app.dependencies.auth import require_active_user
+from app.dependencies.auth import require_active_user, require_admin
 from app.models.auth import User
 from app.schemas.inventory import (
     InventoryAdjustmentRequest,
@@ -72,7 +72,7 @@ def get_inventory_endpoint(
 def enable_inventory_endpoint(
     product_uuid: str,
     payload: InventoryEnableRequest,
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> InventoryResponse:
     try:
@@ -93,7 +93,7 @@ def enable_inventory_endpoint(
 @router.post("/disable", response_model=InventoryResponse)
 def disable_inventory_endpoint(
     product_uuid: str,
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> InventoryResponse:
     result = disable_product_inventory(session, current_user, product_uuid)
@@ -106,7 +106,7 @@ def disable_inventory_endpoint(
 def adjust_inventory_endpoint(
     product_uuid: str,
     payload: InventoryAdjustmentRequest,
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> StockMovementResponse:
     try:
