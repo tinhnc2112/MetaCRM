@@ -14,10 +14,28 @@ export type CustomerSummary = {
   name: string | null;
   phone: string | null;
   email: string | null;
+  default_shipping_address: CustomerDefaultShippingAddress | null;
   avatar_url: string | null;
   last_message_at: string | null;
   conversation_count: number;
   unread_count: number;
+};
+
+export type CustomerDefaultShippingAddress = {
+  address_line: string | null;
+  ward: string | null;
+  district: string | null;
+  province: string | null;
+  postal_code: string | null;
+  country_code: string | null;
+  note: string | null;
+};
+
+export type CustomerContactUpdate = {
+  name: string | null;
+  phone: string | null;
+  email: string | null;
+  default_shipping_address: CustomerDefaultShippingAddress | null;
 };
 
 export type CustomerTagSummary = {

@@ -57,6 +57,7 @@ The following table inventories every registered application route.
 | GET | `/api/v1/facebook/customers/duplicates` | customers |
 | POST | `/api/v1/facebook/customers/{primary_customer_id}/merge` | customers |
 | GET | `/api/v1/facebook/customers/{customer_id}` | customers |
+| PATCH | `/api/v1/facebook/customers/{customer_id}` | customers |
 | POST | `/api/v1/facebook/customers/{conversation_id}/notes` | customers |
 | PATCH | `/api/v1/facebook/customers/notes/{note_id}` | customers |
 | DELETE | `/api/v1/facebook/customers/notes/{note_id}` | customers |
@@ -131,6 +132,24 @@ selftest and resubscription mutation. No J&T webhook or automatic live carrier
 provider exists in the active API.
 
 ## Writes, retries and notifications
+
+`GET /api/v1/facebook/customers/{customer_id}` and customer lists now include
+`default_shipping_address` (nullable) beside name, phone and email. An active
+employee or admin with the Customer in their selected Page can `PATCH
+/api/v1/facebook/customers/{customer_id}` by canonical Customer UUID; unknown,
+merged, deleted and inaccessible Customers return 404. The PATCH body may
+include any of `name`, `phone`, `email`, or `default_shipping_address`.
+Omitted fields remain unchanged, explicit null clears a contact field or the
+entire address, and a supplied address object replaces that one current
+address. Empty existing Customers remain loadable. No provider callback writes
+these staff-entered fields.
+
+At Order creation, absent `shipping_destination` copies current Customer
+recipient name, phone and structured default address. A provided destination
+uses the explicit order values; it does not update Customer. Name/phone/email
+and delivery destination persist on the Order as historical snapshots. Later
+Customer edits or merges leave those snapshots unchanged. Existing orders do
+not require backfill.
 
 Orders accept the optional `Idempotency-Key` request header on `POST
 /api/v1/facebook/orders`: the key is Page/creator-scoped; replay with a

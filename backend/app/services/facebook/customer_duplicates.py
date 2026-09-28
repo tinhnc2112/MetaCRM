@@ -583,6 +583,22 @@ def merge_customers(
         primary_customer.phone = secondary_customer.phone
     if primary_customer.email is None and secondary_customer.email is not None:
         primary_customer.email = secondary_customer.email
+    # Treat the default address as one value: do not blend two different locations.
+    if not any((
+        primary_customer.default_address,
+        primary_customer.default_shipping_ward,
+        primary_customer.default_shipping_district,
+        primary_customer.default_shipping_province,
+        primary_customer.default_shipping_postal_code,
+        primary_customer.default_shipping_country_code,
+        primary_customer.default_shipping_note,
+    )):
+        for field in (
+            "default_address", "default_shipping_ward", "default_shipping_district",
+            "default_shipping_province", "default_shipping_postal_code",
+            "default_shipping_country_code", "default_shipping_note",
+        ):
+            setattr(primary_customer, field, getattr(secondary_customer, field))
 
     if primary.customer_name is None and secondary.customer_name is not None:
         primary.customer_name = secondary.customer_name

@@ -332,6 +332,24 @@ def test_successful_merge_preserves_notes_tags_messages_and_history(client: Test
     assert tag_response.status_code == 200
     client.post(f"/api/v1/facebook/customers/{primary.uuid}/tags/{tag['id']}", headers=_auth(alice))
 
+    primary_customer = session.get(Customer, resolve_customer_for_conversation(session, primary))
+    secondary_customer = session.get(
+        Customer, resolve_customer_for_conversation(session, secondary)
+    )
+    assert primary_customer is not None and secondary_customer is not None
+    secondary_customer.default_address = "Old address"
+    secondary_customer.default_shipping_ward = "Old ward"
+    secondary_customer.default_shipping_province = "Old province"
+    historical = Order(
+        facebook_page_id=page.id, customer_id=secondary_customer.id,
+        conversation_id=secondary.id, order_number="ORD-HISTORICAL-M10",
+        customer_name_snapshot="Old recipient", shipping_address="Old address",
+        shipping_ward="Old ward", subtotal_amount=Decimal("1.00"),
+        total_amount=Decimal("1.00"),
+    )
+    session.add(historical)
+    session.commit()
+
     response = client.post(
         f"/api/v1/facebook/customers/{primary.uuid}/merge",
         headers=_auth(alice),
@@ -343,6 +361,20 @@ def test_successful_merge_preserves_notes_tags_messages_and_history(client: Test
     assert body["primary_customer"]["uuid"] == str(primary.uuid)
     assert body["secondary_customer"]["uuid"] == str(secondary.uuid)
     assert body["merged_by_user_id"] == alice.id
+    assert historical.customer_id == primary_customer.id
+    assert historical.customer_name_snapshot == "Old recipient"
+    assert historical.shipping_address == "Old address"
+    assert primary_customer.default_address == "Old address"
+    assert primary_customer.default_shipping_ward == "Old ward"
+    assert client.patch(
+        f"/api/v1/facebook/customers/{secondary_customer.public_id}",
+        headers=_auth(alice), json={"name": "Obsolete"},
+    ).status_code == 404
+    assert client.patch(
+        f"/api/v1/facebook/customers/{primary_customer.public_id}",
+        headers=_auth(alice), json={"default_shipping_address": {"address_line": "New address"}},
+    ).status_code == 200
+    assert historical.shipping_address == "Old address"
 
     profile = client.get(f"/api/v1/facebook/customers/{primary.uuid}", headers=_auth(alice))
     assert profile.status_code == 200

@@ -35,8 +35,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createOrder, getCustomerOrderSummary, getOrder, listCustomerOrders, updateOrder } from "../services/orderService";
 import { ProductPicker } from "./ProductPicker";
+import { CustomerContactEditor } from "./CustomerContactEditor";
 import type {
   CustomerProfileResponse,
+  CustomerDefaultShippingAddress,
   CustomerNoteSaveRequest,
   CustomerTag
 } from "../types/customer";
@@ -178,6 +180,7 @@ export function CustomerProfilePanel({
   const [orderStatus, setOrderStatus] = useState<"all" | OrderStatus>("all");
   const [selectedOrderUuid, setSelectedOrderUuid] = useState<string | null>(null);
   const [createOrderOpen, setCreateOrderOpen] = useState(false);
+  const [contactEditorOpen, setContactEditorOpen] = useState(false);
   const [createOrderError, setCreateOrderError] = useState<string | null>(null);
   const [createOrderDraft, setCreateOrderDraft] = useState<CreateOrderDraft>(() => buildEmptyOrderDraft());
   const [orderUpdateError, setOrderUpdateError] = useState<string | null>(null);
@@ -236,6 +239,7 @@ export function CustomerProfilePanel({
     setOrderStatus("all");
     setSelectedOrderUuid(null);
     setCreateOrderOpen(false);
+    setContactEditorOpen(false);
     setCreateOrderError(null);
     setCreateOrderDraft(buildEmptyOrderDraft());
     createOrderIdempotencyRef.current = null;
@@ -539,6 +543,11 @@ export function CustomerProfilePanel({
         <Space direction="vertical" align="end" size={8}>
           <Badge count={conversation.unread_count} overflowCount={99} />
           <Space wrap>
+            {customerUuid && currentPageId ? (
+              <Button size="small" icon={<EditOutlined />} onClick={() => setContactEditorOpen(true)}>
+                Edit contact
+              </Button>
+            ) : null}
             {customerUuid && onOpenCustomer ? (
               <Button size="small" icon={<TeamOutlined />} onClick={() => onOpenCustomer(customerUuid)}>
                 Open customer
@@ -571,6 +580,15 @@ export function CustomerProfilePanel({
           <Typography.Text copyable={customerEmail ? { text: customerEmail } : undefined}>
             {customerEmail ?? "Unavailable"}
           </Typography.Text>
+        </div>
+        <div>
+          <span className="messenger-profile-label">Default shipping address</span>
+          <Typography.Text>{[
+            customer?.default_shipping_address?.address_line,
+            customer?.default_shipping_address?.ward,
+            customer?.default_shipping_address?.district,
+            customer?.default_shipping_address?.province
+          ].filter(Boolean).join(", ") || "Unavailable"}</Typography.Text>
         </div>
         <div>
           <span className="messenger-profile-label">Last interaction</span>
@@ -651,7 +669,7 @@ export function CustomerProfilePanel({
               onClick={() => {
                 setCreateOrderError(null);
                 createOrderIdempotencyRef.current = null;
-                setCreateOrderDraft(buildEmptyOrderDraft(headerName, customerPhone));
+                setCreateOrderDraft(buildEmptyOrderDraft(headerName, customerPhone, customer?.default_shipping_address));
                 setCreateOrderOpen(true);
               }}
             >
@@ -708,6 +726,11 @@ export function CustomerProfilePanel({
           />
         )}
       </section>
+
+      {customer && currentPageId ? (
+        <CustomerContactEditor customer={customer} currentPageId={currentPageId}
+          open={contactEditorOpen} onClose={() => setContactEditorOpen(false)} />
+      ) : null}
 
       <CreateOrderModal
         open={createOrderOpen}
@@ -1620,7 +1643,8 @@ function buildLifecycleUpdatePayload(
 
 function buildEmptyOrderDraft(
   recipientName: string | null = null,
-  recipientPhone: string | null = null
+  recipientPhone: string | null = null,
+  address: CustomerDefaultShippingAddress | null = null
 ): CreateOrderDraft {
   return {
     currency: "VND",
@@ -1628,13 +1652,13 @@ function buildEmptyOrderDraft(
     shipping_fee: 0,
     shipping_recipient_name: recipientName ?? "",
     shipping_recipient_phone: recipientPhone ?? "",
-    shipping_address: "",
-    shipping_ward: "",
-    shipping_district: "",
-    shipping_province: "",
-    shipping_postal_code: "",
-    shipping_country_code: "VN",
-    shipping_note: "",
+    shipping_address: address?.address_line ?? "",
+    shipping_ward: address?.ward ?? "",
+    shipping_district: address?.district ?? "",
+    shipping_province: address?.province ?? "",
+    shipping_postal_code: address?.postal_code ?? "",
+    shipping_country_code: address?.country_code ?? "VN",
+    shipping_note: address?.note ?? "",
     note: "",
     items: [buildEmptyOrderItemDraft()]
   };

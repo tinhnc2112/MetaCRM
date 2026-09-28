@@ -245,6 +245,80 @@ def test_get_customer_profile(client: TestClient, session: Session) -> None:
     assert body["timeline"][0]["type"] == "note"
 
 
+def test_contact_update_is_page_scoped_role_checked_and_backward_compatible(
+    client: TestClient, session: Session
+) -> None:
+    alice, bob = _get_users(session)
+    page_a = _make_page(session, alice, "page-contact-a")
+    page_b = _make_page(session, bob, "page-contact-b")
+    customer = _make_customer(session, name="Original")
+    _make_conversation(session, page_a, customer_id=customer.id)
+    _select_page(session, alice, page_a)
+    _select_page(session, bob, page_b)
+    endpoint = f"/api/v1/facebook/customers/{customer.public_id}"
+
+    initial = client.get(endpoint, headers=_auth(alice))
+    assert initial.status_code == 200
+    assert initial.json()["customer"]["default_shipping_address"] is None
+    assert client.patch(endpoint, headers=_auth(bob), json={"name": "Intruder"}).status_code == 404
+    assert client.patch(endpoint, json={"name": "Intruder"}).status_code == 401
+    assert client.patch(
+        "/api/v1/facebook/customers/not-a-uuid", headers=_auth(alice), json={"name": "X"}
+    ).status_code == 404
+
+    employee = User(
+        username="employee_contact", email="employee_contact@example.com",
+        password_hash=hash_password("pw"), roles=[Role(name="employee")],
+    )
+    session.add(employee)
+    session.commit()
+    # Page selection is scoped to the user, not the untrusted request body.
+    assert client.patch(
+        endpoint, headers=_auth(employee), json={"name": "Employee"}
+    ).status_code == 404
+    page_for_employee = _make_page(session, employee, "page-contact-employee")
+    _make_conversation(session, page_for_employee, customer_id=customer.id)
+    _select_page(session, employee, page_for_employee)
+    saved = client.patch(endpoint, headers=_auth(employee), json={
+        "name": " Updated Customer ", "phone": " 090 123 4567 ",
+        "email": " staff@example.com ",
+        "default_shipping_address": {
+            "address_line": " 12 Main St ", "ward": " Ward A ",
+            "district": " District B ", "province": " Province C ",
+            "postal_code": " 12345 ", "country_code": " vn ", "note": " Call first ",
+        },
+    })
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["customer"]["name"] == "Updated Customer"
+    assert saved.json()["customer"]["default_shipping_address"] == {
+        "address_line": "12 Main St", "ward": "Ward A", "district": "District B",
+        "province": "Province C", "postal_code": "12345", "country_code": "VN",
+        "note": "Call first",
+    }
+    assert client.get(endpoint, headers=_auth(alice)).json()["customer"]["phone"] == "090 123 4567"
+    # Older PATCH consumers can omit new address fields without clearing them.
+    assert client.patch(endpoint, headers=_auth(alice), json={"name": "Later"}).status_code == 200
+    assert customer.default_address == "12 Main St"
+    assert client.patch(
+        endpoint, headers=_auth(alice), json={"email": "invalid"}
+    ).status_code == 422
+    assert client.patch(endpoint, headers=_auth(alice), json={"phone": "abc"}).status_code == 422
+    assert client.patch(endpoint, headers=_auth(alice), json={"default_shipping_address": {
+        "country_code": "INVALID"
+    }}).status_code == 422
+
+    unknown = User(
+        username="unknown_contact", email="unknown_contact@example.com",
+        password_hash=hash_password("pw"), roles=[Role(name="manager")],
+    )
+    session.add(unknown)
+    session.commit()
+    assert client.patch(endpoint, headers=_auth(unknown), json={"name": "No"}).status_code == 403
+    employee.roles[0].is_active = False
+    session.commit()
+    assert client.patch(endpoint, headers=_auth(employee), json={"name": "No"}).status_code == 403
+
+
 def test_customer_list_returns_canonical_customers_sorted_and_paginated(
     client: TestClient, session: Session
 ) -> None:

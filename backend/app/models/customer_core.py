@@ -38,6 +38,12 @@ class Customer(Base):
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     default_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    default_shipping_ward: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    default_shipping_district: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    default_shipping_province: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    default_shipping_postal_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    default_shipping_country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    default_shipping_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="ACTIVE")
     # M19.5: set when this Customer has been merged into another Customer.
     # Self-referential, so ON DELETE SET NULL avoids a cascade cycle.
