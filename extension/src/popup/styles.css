@@ -69,8 +69,7 @@ h1 {
   box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.14);
 }
 
-#backend-text,
-#websocket-text {
+#backend-text {
   color: #334155;
 }
 

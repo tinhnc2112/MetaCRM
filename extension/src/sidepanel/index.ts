@@ -4,18 +4,12 @@ import "../sidepanel/styles.css";
 
 const backendDot = document.querySelector<HTMLSpanElement>("#backend-dot");
 const backendText = document.querySelector<HTMLSpanElement>("#backend-text");
-const websocketDot = document.querySelector<HTMLSpanElement>("#websocket-dot");
-const websocketText = document.querySelector<HTMLSpanElement>("#websocket-text");
-const reconnectButton = document.querySelector<HTMLButtonElement>("#reconnect-button");
+const refreshButton = document.querySelector<HTMLButtonElement>("#reconnect-button");
 
-function renderConnection(snapshot: { backend: "CONNECTED" | "DISCONNECTED"; websocket: "CONNECTED" | "CONNECTING" | "DISCONNECTED" | "ERROR" }): void {
+function renderConnection(snapshot: { backend: "REACHABLE" | "UNAVAILABLE" }): void {
   backendText?.replaceChildren(getConnectionLabel(snapshot.backend));
   backendDot?.classList.remove("connected", "connecting", "disconnected", "error");
   backendDot?.classList.add(getConnectionClass(snapshot.backend));
-
-  websocketText?.replaceChildren(getConnectionLabel(snapshot.websocket));
-  websocketDot?.classList.remove("connected", "connecting", "disconnected", "error");
-  websocketDot?.classList.add(getConnectionClass(snapshot.websocket));
 }
 
 async function loadStatus(): Promise<void> {
@@ -30,14 +24,13 @@ async function loadStatus(): Promise<void> {
   }
 
   renderConnection({
-    backend: "DISCONNECTED",
-    websocket: "DISCONNECTED"
+    backend: "UNAVAILABLE"
   });
 }
 
-async function reconnect(): Promise<void> {
+async function refresh(): Promise<void> {
   const response = await sendRuntimeMessage({
-    type: "CONNECT_BACKEND",
+    type: "REFRESH_BACKEND_HEALTH",
     source: "sidepanel"
   });
 
@@ -62,8 +55,8 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
   }
 });
 
-reconnectButton?.addEventListener("click", () => {
-  void reconnect();
+refreshButton?.addEventListener("click", () => {
+  void refresh();
 });
 
 void loadStatus();

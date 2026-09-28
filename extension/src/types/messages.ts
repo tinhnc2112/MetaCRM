@@ -12,13 +12,8 @@ export type GetConnectionStatusMessage = {
   source: "popup" | "sidepanel";
 };
 
-export type ConnectBackendMessage = {
-  type: "CONNECT_BACKEND";
-  source: "popup" | "sidepanel";
-};
-
-export type DisconnectBackendMessage = {
-  type: "DISCONNECT_BACKEND";
+export type RefreshBackendHealthMessage = {
+  type: "REFRESH_BACKEND_HEALTH";
   source: "popup" | "sidepanel";
 };
 
@@ -31,8 +26,7 @@ export type ContentScriptReadyMessage = {
 export type ExtensionMessage =
   | PingMessage
   | GetConnectionStatusMessage
-  | ConnectBackendMessage
-  | DisconnectBackendMessage
+  | RefreshBackendHealthMessage
   | ContentScriptReadyMessage;
 
 export type PongResponse = {

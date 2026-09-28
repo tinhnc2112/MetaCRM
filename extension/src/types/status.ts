@@ -1,9 +1,4 @@
-export type ConnectionState = "CONNECTED" | "CONNECTING" | "DISCONNECTED" | "ERROR";
-
-export type BackendHealthState = "CONNECTED" | "DISCONNECTED";
-
 export type ConnectionSnapshot = {
-  backend: BackendHealthState;
-  websocket: ConnectionState;
-  connection: ConnectionState;
+  /** Public HTTP liveness only; does not imply authentication or Messenger delivery. */
+  backend: "REACHABLE" | "UNAVAILABLE";
 };

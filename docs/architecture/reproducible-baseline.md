@@ -30,7 +30,7 @@ cd backend
 cd ..
 ```
 
-In PowerShell set `$env:METACRM_E2E='true'`, `$env:APP_ENV='test'`, `$env:DATABASE_URL='mysql+pymysql://root@127.0.0.1:3307/metacrm_m0_test_e2e'`, and `$env:METACRM_E2E_DATABASE_URL=$env:DATABASE_URL`. For a clean migration run, repeat `prepare` only on this dedicated container. The Alembic revision head observed at audit was `0026_fb_webhook_subscription`; `current --check-heads` checks the actual migrated state. No migration is applied to any developer or production DB by this guide.
+In PowerShell set `$env:METACRM_E2E='true'`, `$env:APP_ENV='test'`, `$env:DATABASE_URL='mysql+pymysql://root@127.0.0.1:3307/metacrm_m0_test_e2e'`, and `$env:METACRM_E2E_DATABASE_URL=$env:DATABASE_URL`. For a clean migration run, repeat `prepare` only on this dedicated container. The current head after M5 is `0028_outbound_sends`; `current --check-heads` checks the actual migrated state. No migration is applied to any developer or production DB by this guide.
 
 ## Verification commands
 

@@ -14,11 +14,11 @@ const connectionService = new ConnectionService({
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  void connectionService.connectBackend();
+  void connectionService.refreshBackendHealth();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void connectionService.connectBackend();
+  void connectionService.refreshBackendHealth();
 });
 
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
@@ -44,15 +44,8 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     return true;
   }
 
-  if (message.type === "CONNECT_BACKEND") {
-    void connectionService.connectBackend().then((snapshot) => {
-      sendResponse({ ok: true, type: "CONNECTION_STATUS", source: "background", connection: snapshot } satisfies ExtensionResponse);
-    });
-    return true;
-  }
-
-  if (message.type === "DISCONNECT_BACKEND") {
-    void connectionService.disconnectBackend().then((snapshot) => {
+  if (message.type === "REFRESH_BACKEND_HEALTH") {
+    void connectionService.refreshBackendHealth().then((snapshot) => {
       sendResponse({ ok: true, type: "CONNECTION_STATUS", source: "background", connection: snapshot } satisfies ExtensionResponse);
     });
     return true;

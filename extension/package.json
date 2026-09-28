@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build",
-    "dev": "vite build --watch"
+    "dev": "vite build --watch",
+    "test:connection": "node --test tests/background-health.test.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
