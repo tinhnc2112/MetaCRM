@@ -7,7 +7,7 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
-from app.models.auth import User
+from app.models.auth import Role, User
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.services.facebook.auth import (
     FACEBOOK_AUTH_SCOPES,
@@ -49,17 +49,20 @@ def session(monkeypatch: pytest.MonkeyPatch) -> Generator[Session]:
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
     Base.metadata.create_all(engine)
+    admin_role = Role(name="admin")
     local_session = sessionmaker(bind=engine, expire_on_commit=False)
     database_session = local_session()
     database_session.add_all(
         [
             User(
+                roles=[admin_role],
                 username="alice",
                 email="alice@example.com",
                 password_hash=hash_password("correct-password"),
                 full_name="Alice Example",
             ),
             User(
+                roles=[admin_role],
                 username="bob",
                 email="bob@example.com",
                 password_hash=hash_password("correct-password"),

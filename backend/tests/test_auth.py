@@ -23,11 +23,13 @@ def session() -> Generator[Session]:
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
     Base.metadata.create_all(engine)
+    admin_role = Role(name="admin")
     local_session = sessionmaker(bind=engine, expire_on_commit=False)
     database_session = local_session()
     database_session.add(Role(name="staff", description="Standard staff access"))
     database_session.add(
         User(
+            roles=[admin_role],
             username="alice",
             email="alice@example.com",
             password_hash=hash_password("correct-password"),

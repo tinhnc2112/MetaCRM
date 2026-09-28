@@ -48,4 +48,17 @@ def require_active_user(current_user: User = Depends(get_current_user)) -> User:
     """Require the authenticated account to remain active."""
     if not current_user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
+    if not any(
+        role.is_active and role.name in {"admin", "staff", "employee"}
+        for role in current_user.roles
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    return current_user
+
+
+def require_admin(current_user: User = Depends(require_active_user)) -> User:
+    """Require an active admin role for configuration and diagnostic operations."""
+    require_active_user(current_user)
+    if not any(role.is_active and role.name == "admin" for role in current_user.roles):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     return current_user

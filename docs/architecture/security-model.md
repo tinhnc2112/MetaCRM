@@ -4,7 +4,7 @@ Audit scope: checked-in backend, Electron renderer, extension and configuration 
 
 | Trust boundary / current control | Gap / action |
 |---|---|
-| Desktop/extension to FastAPI: bearer JWT (`dependencies/auth.py`), per-Page lookup (`services/facebook/pages.py`); Electron isolation and disabled Node integration (`desktop/electron/main.ts`). | Add operation-level RBAC to existing Role model after permission matrix approval. Restrict `shell.openExternal(url)` to intended trusted scheme/hosts; test crafted navigation. Keep tokens in renderer memory (`desktop/src/stores/authStore.ts`), not persistent browser storage. |
+| Desktop/extension to FastAPI: bearer JWT (`dependencies/auth.py`), per-Page lookup (`services/facebook/pages.py`); Electron isolation and disabled Node integration (`desktop/electron/main.ts`). | M6 enforces the approved action matrix server-side using existing roles and 403 responses. Restrict `shell.openExternal(url)` to intended trusted scheme/hosts; test crafted navigation. Keep tokens in renderer memory (`desktop/src/stores/authStore.ts`), not persistent browser storage. |
 | Facebook webhook to API: raw-body HMAC SHA-256 with constant-time comparison (`services/facebook/messenger.py:30-47`); configured App Secret required (`api/webhook.py:149-171`). | Cap request body before parsing, suppress raw payload/header/PII debug logs, reject unexpected content; unique-key collision handling, retry and replay tests. Webhook GET verification token is distinct from POST signature. |
 | Facebook OAuth/Graph: encrypted Page tokens (`services/facebook/crypto.py`), Page access checks in services, network timeout in Graph client. | Remove token prefix from `/debug/page-token`; gate/remove unauthenticated `/debug/webhook-selftest`; audit debug routes and avoid logging provider response secrets. Rotate keys with readable old data during migration. |
 | JWT access and refresh: expirations and `type` claims (`utils/jwt.py`, `api/auth.py`). | Reject development default secret in production, design refresh rotation/revocation for staff offboarding; add negative tests for revoked/inactive users. |
@@ -29,3 +29,33 @@ Threat findings (likelihood is environment-dependent): **S1 High** debug selftes
 M1 implementation: `/debug/webhook-selftest` now requires an active bearer user before reading a body. `/debug/page-token/{page_id}` returns availability and expiry but no token fragment or length. Webhook ingress logs generated request identifiers, body size and signature presence; it does not log supplied headers, payload values, or customer IDs. Graph diagnostics redact unexpected and credential-bearing fields and Graph errors expose generic text. `/api/v1/system/health` remains public for liveness. These are implementation updates to the historical audit findings above, not a reassessment of the other findings. Webhook request size remains an open deployment/contract decision; no application cap is enforced by M1. Disable proxy/server access logs of query strings and sensitive headers at deployment; the application cannot redact logs generated outside its process.
 
 Security verification required: unauthenticated and cross-Page API/WS tests; role/action matrix; invalid webhook signature and duplicate concurrent delivery; redacted logs; token rotation/revocation; dependency review against lockfiles; migration/backup restore drill. Any future webhook body-size limit requires a documented contract and compatibility review. Do not send real credentials into tests or reports.
+
+## M6 action authorization
+
+An active `admin` role grants all normal CRM, configuration and diagnostic operations.
+An active `staff` role is the existing database name for the approved employee role;
+`employee` is also recognized for existing installations that use that name. Unknown,
+inactive, or absent roles confer no API/WS access. A user with both active roles has
+admin access. Role checks query the current database user rather than JWT role claims,
+so changing/deactivating a role affects subsequent requests with existing access tokens.
+The previous migration also seeded a `manager` role; it is not in the approved two-role
+matrix and receives no permissions until an explicit migration/role assignment is made.
+
+| Operation | Employee | Admin |
+|---|---|---|
+| Conversations/messages, outbound send/status/reconciliation, customers/tags/segments, orders including stock-consuming workflow, product catalog, shipments/waybills | Read and normal business writes | Full |
+| Inventory enable/disable/adjust | Denied (403) | Allowed |
+| Inventory and movement reads | Allowed | Allowed |
+| Page list/current/selection, carrier provider and account reads | Allowed | Allowed |
+| Facebook OAuth connection, Page sync, carrier account/config/credential changes | Denied (403) | Allowed |
+| Facebook `/debug/*` diagnostics and resubscription | Denied (403) | Allowed |
+| User/role management, other security/admin configuration | No active HTTP routes; employees cannot perform these actions | No active HTTP routes |
+
+Page ownership checks still apply after the action gate. Facebook OAuth callback
+rechecks the role attached to the validated state before exchanging a provider code;
+Facebook webhook signature/verification flows remain independent of staff JWTs.
+System health/version and token login/refresh/logout retain their existing public or
+credential-based contracts. No schema or token-response changes are required.
+Before rollout, review existing staff assignments and any `manager` accounts; apply
+the intended role grants through an authorized provisioning procedure. Reverting the
+M6 code restores the previous operation policy without a database downgrade.

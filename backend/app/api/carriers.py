@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from app.db.session import get_db_session
-from app.dependencies.auth import require_active_user
+from app.dependencies.auth import require_active_user, require_admin
 from app.models.auth import User
 from app.schemas.carriers import (
     CarrierAccountCreate,
@@ -90,7 +90,7 @@ def list_carrier_accounts_endpoint(
 )
 def create_carrier_account_endpoint(
     payload: CarrierAccountCreate,
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> CarrierAccountResponse:
     try:
@@ -125,7 +125,7 @@ def get_carrier_account_endpoint(
 def update_carrier_account_endpoint(
     account_uuid: str,
     payload: CarrierAccountUpdate,
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> CarrierAccountResponse:
     try:
@@ -143,7 +143,7 @@ def update_carrier_account_endpoint(
 def replace_carrier_credentials_endpoint(
     account_uuid: str,
     payload: CarrierCredentialsUpdate,
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> CarrierAccountResponse:
     try:
@@ -160,7 +160,7 @@ def replace_carrier_credentials_endpoint(
 @router.post("/carrier-accounts/{account_uuid}/deactivate", response_model=CarrierAccountResponse)
 def deactivate_carrier_account_endpoint(
     account_uuid: str,
-    current_user: Annotated[User, Depends(require_active_user)],
+    current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> CarrierAccountResponse:
     account = deactivate_carrier_account(session, current_user, account_uuid)
