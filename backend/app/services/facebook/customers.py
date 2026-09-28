@@ -278,6 +278,44 @@ def get_customer_profile_by_uuid(session: Session, user: User, customer_uuid: st
     )
 
 
+def update_customer_contact(
+    session: Session, user: User, customer_uuid: str, changes: dict[str, object]
+) -> CustomerProfileData | None:
+    """Update only an accessible canonical Customer; never touch Order snapshots."""
+    profile = get_customer_profile_by_uuid(session, user, customer_uuid)
+    if profile is None:
+        return None
+    customer = (
+        session.query(Customer)
+        .filter(
+            Customer.id == profile.customer.id,
+            Customer.deleted_at.is_(None),
+            Customer.merged_into_customer_id.is_(None),
+        )
+        .with_for_update()
+        .first()
+    )
+    if customer is None:
+        return None
+    for field in ("name", "phone", "email"):
+        if field in changes:
+            setattr(customer, field, changes[field])
+    if "default_shipping_address" in changes:
+        address = changes["default_shipping_address"] or {}
+        for field, column in (
+            ("address_line", "default_address"),
+            ("ward", "default_shipping_ward"),
+            ("district", "default_shipping_district"),
+            ("province", "default_shipping_province"),
+            ("postal_code", "default_shipping_postal_code"),
+            ("country_code", "default_shipping_country_code"),
+            ("note", "default_shipping_note"),
+        ):
+            setattr(customer, column, address.get(field))
+    session.commit()
+    return get_customer_profile_by_uuid(session, user, customer_uuid)
+
+
 def list_customers(
     session: Session,
     user: User,

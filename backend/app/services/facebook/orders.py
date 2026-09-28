@@ -211,6 +211,14 @@ def _normalise_shipping_input(
             "recipient_phone": customer.phone if customer is not None else None,
             "address_line": legacy_address
             or (customer.default_address if customer is not None else None),
+            "ward": customer.default_shipping_ward if customer is not None else None,
+            "district": customer.default_shipping_district if customer is not None else None,
+            "province": customer.default_shipping_province if customer is not None else None,
+            "postal_code": customer.default_shipping_postal_code if customer is not None else None,
+            "country_code": (
+                customer.default_shipping_country_code if customer is not None else None
+            ),
+            "note": customer.default_shipping_note if customer is not None else None,
         }
     else:
         raw = value

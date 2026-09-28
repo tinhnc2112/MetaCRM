@@ -7,49 +7,67 @@ from uuid import UUID
 
 from app.db.session import get_db_session
 from app.dependencies.auth import require_active_user
-from app.models.customer_core import Customer
 from app.models.auth import User
-from app.schemas.customers import (
-    CustomerNoteCreateRequest,
-    CustomerNoteDeleteResponse,
-    CustomerListItemResponse,
-    CustomerListResponse,
-    CustomerNoteResponse,
-    CustomerTagAssignmentResponse,
-    CustomerTagSummaryResponse,
-    CustomerNoteUpdateRequest,
-    CustomerProfileConversationResponse,
-    CustomerProfileResponse,
-    CustomerSummaryResponse,
-    CustomerTimelineResponse,
-)
+from app.models.customer_core import Customer
 from app.schemas.customer_duplicates import (
     CustomerDuplicateCandidateResponse,
     CustomerDuplicateListResponse,
     CustomerMergeRequest,
     CustomerMergeResponse,
 )
+from app.schemas.customers import (
+    CustomerContactUpdate,
+    CustomerDefaultShippingAddress,
+    CustomerListItemResponse,
+    CustomerListResponse,
+    CustomerNoteCreateRequest,
+    CustomerNoteDeleteResponse,
+    CustomerNoteResponse,
+    CustomerNoteUpdateRequest,
+    CustomerProfileConversationResponse,
+    CustomerProfileResponse,
+    CustomerSummaryResponse,
+    CustomerTagAssignmentResponse,
+    CustomerTagSummaryResponse,
+    CustomerTimelineResponse,
+)
+from app.schemas.messenger import PaginationMeta
+from app.services.facebook.conversations import unread_count_for_conversation
+from app.services.facebook.customer_duplicates import list_customer_duplicates, merge_customers
+from app.services.facebook.customer_tags import (
+    assign_customer_tag_to_conversation,
+    list_tags_for_customer,
+    remove_customer_tag_from_conversation,
+)
 from app.services.facebook.customers import (
     create_customer_note,
     delete_customer_note,
-    get_customer_profile_by_uuid,
     get_customer_profile,
+    get_customer_profile_by_uuid,
     list_customers,
+    update_customer_contact,
     update_customer_note,
 )
-from app.services.facebook.customer_duplicates import list_customer_duplicates, merge_customers
-from app.services.facebook.customer_tags import list_tags_for_customer
 from app.services.facebook.pages import get_current_page
-from app.services.facebook.customer_tags import (
-    assign_customer_tag_to_conversation,
-    remove_customer_tag_from_conversation,
-)
-from app.services.facebook.conversations import unread_count_for_conversation
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from app.schemas.messenger import PaginationMeta
 
 router = APIRouter(prefix="/facebook/customers", tags=["customers"])
+
+
+def _default_shipping_address(customer: Customer) -> CustomerDefaultShippingAddress | None:
+    values = dict(
+        address_line=customer.default_address,
+        ward=customer.default_shipping_ward,
+        district=customer.default_shipping_district,
+        province=customer.default_shipping_province,
+        postal_code=customer.default_shipping_postal_code,
+        country_code=customer.default_shipping_country_code,
+        note=customer.default_shipping_note,
+    )
+    return CustomerDefaultShippingAddress(**values) if any(
+        value for key, value in values.items() if key != "country_code"
+    ) else None
 
 
 def _serialize_conversation(conversation, session: Session) -> CustomerProfileConversationResponse:
@@ -80,6 +98,7 @@ def _serialize_profile(profile) -> CustomerProfileResponse:
         name=profile.customer.name,
         phone=profile.customer.phone,
         email=profile.customer.email,
+        default_shipping_address=_default_shipping_address(profile.customer),
         avatar_url=profile.conversation.customer_avatar_url,
         last_message_at=profile.conversation.last_message_at,
         conversation_count=len(profile.conversations),
@@ -151,6 +170,7 @@ def _serialize_customer_list_item(
         name=item.customer.name,
         phone=item.customer.phone,
         email=item.customer.email,
+        default_shipping_address=_default_shipping_address(item.customer),
         avatar_url=item.avatar_url,
         last_message_at=item.last_message_at,
         conversation_count=item.conversation_count,
@@ -275,6 +295,21 @@ def customer_profile_endpoint(
     profile = get_customer_profile(session, current_user, customer_id)
     if profile is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return _serialize_profile(profile)
+
+
+@router.patch("/{customer_id}", response_model=CustomerProfileResponse)
+def update_customer_endpoint(
+    customer_id: str,
+    payload: CustomerContactUpdate,
+    current_user: Annotated[User, Depends(require_active_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> CustomerProfileResponse:
+    profile = update_customer_contact(
+        session, current_user, customer_id, payload.model_dump(exclude_unset=True)
+    )
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
     return _serialize_profile(profile)
 
 

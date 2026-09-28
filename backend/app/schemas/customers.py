@@ -5,8 +5,67 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.messenger import PaginationMeta
+from app.utils.phone import normalize_phone
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class CustomerDefaultShippingAddress(BaseModel):
+    address_line: str | None = Field(default=None, max_length=5000)
+    ward: str | None = Field(default=None, max_length=255)
+    district: str | None = Field(default=None, max_length=255)
+    province: str | None = Field(default=None, max_length=255)
+    postal_code: str | None = Field(default=None, max_length=32)
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
+    note: str | None = Field(default=None, max_length=5000)
+
+    @field_validator(
+        "address_line", "ward", "district", "province", "postal_code", "note", mode="before"
+    )
+    @classmethod
+    def trim_text(cls, value: object) -> object:
+        return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator("country_code", mode="before")
+    @classmethod
+    def normalize_country(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        value = value.strip().upper()
+        if value and (len(value) != 2 or not value.isalpha() or not value.isascii()):
+            raise ValueError("country_code must be a 2-letter code")
+        return value or None
+
+
+class CustomerContactUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=255)
+    phone: str | None = Field(default=None, max_length=32)
+    email: str | None = Field(default=None, max_length=255)
+    default_shipping_address: CustomerDefaultShippingAddress | None = None
+
+    @field_validator("name", "phone", "email", mode="before")
+    @classmethod
+    def trim_contact(cls, value: object) -> object:
+        return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str | None) -> str | None:
+        if value is not None:
+            normalize_phone(value)
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str | None) -> str | None:
+        if value is not None:
+            local, sep, domain = value.partition("@")
+            if (not sep or not local or not domain or "@" in domain
+                    or any(c.isspace() for c in value)):
+                raise ValueError("email has an invalid format")
+        return value
 
 
 class CustomerProfileConversationResponse(BaseModel):
@@ -27,6 +86,7 @@ class CustomerSummaryResponse(BaseModel):
     name: str | None = None
     phone: str | None = None
     email: str | None = None
+    default_shipping_address: CustomerDefaultShippingAddress | None = None
     avatar_url: str | None = None
     last_message_at: datetime | None = None
     conversation_count: int = 0

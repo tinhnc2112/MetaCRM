@@ -1,6 +1,7 @@
 import { apiClient } from "./apiClient";
 import type {
   CustomerNoteDeleteResponse,
+  CustomerContactUpdate,
   CustomerListResponse,
   CustomerProfileResponse,
 } from "../types/customer";
@@ -29,6 +30,17 @@ export async function getCustomerProfile(conversationId: string): Promise<Custom
 
 export async function getCustomerProfileByCustomerId(customerId: string): Promise<CustomerProfileResponse> {
   return getCustomerProfile(customerId);
+}
+
+export async function updateCustomerContact(
+  customerId: string,
+  input: CustomerContactUpdate
+): Promise<CustomerProfileResponse> {
+  const response = await apiClient.patch<CustomerProfileResponse>(
+    `/api/v1/facebook/customers/${encodeURIComponent(customerId)}`,
+    input
+  );
+  return response.data;
 }
 
 export async function createCustomerNote(

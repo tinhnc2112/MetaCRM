@@ -771,6 +771,61 @@ def test_shipping_destination_create_detail_and_customer_snapshot_independence(
     assert detail.json()["shipping_destination"] == destination
 
 
+def test_customer_contact_defaults_are_copied_only_at_order_creation(
+    client: TestClient, session: Session
+) -> None:
+    alice, _ = _get_users(session)
+    page = _make_page(session, alice, "page-contact-snapshots")
+    _select_page(session, alice, page)
+    customer = _make_customer(
+        session, name="Initial", phone="0901234567", email="first@example.com"
+    )
+    _make_conversation(session, page, psid="psid-contact-snapshots", customer_id=customer.id)
+    contact_url = f"/api/v1/facebook/customers/{customer.public_id}"
+    first_update = client.patch(contact_url, headers=_auth(alice), json={
+        "default_shipping_address": {
+            "address_line": "12 First St", "ward": "Ward A", "district": "District A",
+            "province": "Province A", "postal_code": "10000", "country_code": "VN",
+        }
+    })
+    assert first_update.status_code == 200
+    base = {"customer_uuid": str(customer.public_id), "items": [
+        {"item_name": "Parcel", "quantity": 1, "unit_price": 10}
+    ]}
+    first = client.post("/api/v1/facebook/orders", headers=_auth(alice), json=base)
+    assert first.status_code == 200, first.text
+    assert first.json()["customer_name_snapshot"] == "Initial"
+    assert first.json()["customer_email_snapshot"] == "first@example.com"
+    assert first.json()["shipping_destination"]["ward"] == "Ward A"
+    assert first.json()["shipping_destination"]["address_line"] == "12 First St"
+
+    second_update = client.patch(contact_url, headers=_auth(alice), json={
+        "name": "Changed", "phone": "0987654321", "email": "later@example.com",
+        "default_shipping_address": {
+            "address_line": "34 Later St", "ward": "Ward B", "district": "District B",
+            "province": "Province B", "country_code": "VN",
+        },
+    })
+    assert second_update.status_code == 200
+    historical = client.get(f"/api/v1/facebook/orders/{first.json()['uuid']}", headers=_auth(alice))
+    assert historical.status_code == 200
+    assert historical.json()["customer_name_snapshot"] == "Initial"
+    assert historical.json()["customer_phone_snapshot"] == "0901234567"
+    assert historical.json()["shipping_destination"] == first.json()["shipping_destination"]
+
+    second = client.post("/api/v1/facebook/orders", headers=_auth(alice), json=base)
+    assert second.status_code == 200
+    assert second.json()["customer_name_snapshot"] == "Changed"
+    assert second.json()["customer_email_snapshot"] == "later@example.com"
+    assert second.json()["shipping_destination"]["address_line"] == "34 Later St"
+    explicit = client.post("/api/v1/facebook/orders", headers=_auth(alice), json={
+        **base, "shipping_destination": {"recipient_name": "One-off", "address_line": "Other St"}
+    })
+    assert explicit.status_code == 200
+    assert explicit.json()["shipping_destination"]["address_line"] == "Other St"
+    assert customer.default_address == "34 Later St"
+
+
 def test_shipping_destination_absent_and_partial_orders_remain_valid(
     client: TestClient, session: Session
 ) -> None:
