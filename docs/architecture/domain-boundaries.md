@@ -16,4 +16,4 @@ The boundaries below follow current models and service calls; they are target ow
 
 Actual service layout places orders, products, inventory, customer and shipment operations under `services/facebook/` even when they are core concerns. Move import locations incrementally only when changing a boundary for a demonstrated reason; no wholesale rewrite. The current Page is selected via `user_page_contexts`; sharing customers across Pages is constrained by Page access and CustomerIdentity ownership. Validate cross-Page customer merges and orders in contract/integration tests before broadening tenant scope.
 
-Not implemented in this baseline: a separate POS/payment processor, automated J&T provider, multi-warehouse stock, production AI sales agent. Legacy root `main.py` is a separate AI Sale BOT prototype; it does not establish the active backend domain contract.
+Not implemented in this baseline: a separate POS/payment processor, automated J&T provider, multi-warehouse stock, production AI sales agent. The independent AI Sale BOT prototype was removed in M9; it never established the active backend domain contract.
