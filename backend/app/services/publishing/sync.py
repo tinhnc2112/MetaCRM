@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.publishing import ScheduledPost, SheetPublishingConfig, source_identity_key
-from app.services.publishing.parser import parse_rows
+from app.services.publishing.parser import IMPORTABLE_STATUSES, parse_rows
 from app.services.publishing.sheet import SheetError, SheetsClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -42,9 +42,13 @@ def sync_sheet(session: Session, client: SheetsClient | None = None) -> dict[str
     if config is None or (config.spreadsheet_id, config.worksheet, config.timezone) != source:
         raise ValueError("Sheet configuration changed during sync; retry")
     pages = session.scalars(
-        select(FacebookPage).join(FacebookAccount).where(
-            FacebookPage.is_active.is_(True), FacebookPage.deleted_at.is_(None),
-            FacebookAccount.is_active.is_(True), FacebookAccount.deleted_at.is_(None),
+        select(FacebookPage)
+        .join(FacebookAccount)
+        .where(
+            FacebookPage.is_active.is_(True),
+            FacebookPage.deleted_at.is_(None),
+            FacebookAccount.is_active.is_(True),
+            FacebookAccount.deleted_at.is_(None),
         )
     ).all()
     created = updated = unchanged = invalid = 0
@@ -64,14 +68,55 @@ def sync_sheet(session: Session, client: SheetsClient | None = None) -> dict[str
             )
             .with_for_update()
         )
+        if post is None and row.sheet_status not in IMPORTABLE_STATUSES:
+            post = ScheduledPost(
+                source="google_sheet",
+                source_key=key,
+                spreadsheet_id=config.spreadsheet_id,
+                worksheet=config.worksheet,
+                external_id=row.external_id,
+                source_timezone=config.timezone,
+                status="INVALID",
+            )
+            session.add(post)
+            post.source_row = row.row_number
+            post.caption = row.caption
+            post.image_url = row.image_url
+            post.scheduled_for_utc = scheduled_utc
+            post.last_error_code = "SHEET_STATUS"
+            post.last_error_message = "Sheet Status requires review before importing"
+            post.writeback_pending = False  # Do not overwrite the user's status.
+            created += 1
+            invalid += 1
+            continue
         if post is not None and post.status in {
             "PUBLISHING",
             "PUBLISHED",
             "UNCERTAIN",
             "CANCELLED",
-            "FAILED",
         }:
             unchanged += 1
+            continue
+        allowed_statuses = IMPORTABLE_STATUSES
+        if post is not None and post.status in {"READY", "SCHEDULED"}:
+            allowed_statuses = allowed_statuses | {"Đã lên lịch"}
+        if post is not None and post.status == "FAILED":
+            allowed_statuses = allowed_statuses | {"Lỗi"}
+        if post is not None and post.status == "INVALID" and post.last_error_code != "SHEET_STATUS":
+            allowed_statuses = allowed_statuses | {"Lỗi"}
+        if row.sheet_status not in allowed_statuses:
+            if post is not None and post.status in {"READY", "SCHEDULED"}:
+                # A conflicting source state can mean someone published or
+                # cancelled outside MetaCRM. Quarantine before the worker claims it.
+                post.status = "INVALID"
+                post.last_error_code = "SHEET_STATUS"
+                post.last_error_message = "Sheet Status conflicts with pending schedule"
+                post.source_row = row.row_number
+                post.writeback_pending = False
+                updated += 1
+                invalid += 1
+            else:
+                unchanged += 1
             continue
         if post is None:
             post = ScheduledPost(
@@ -96,7 +141,7 @@ def sync_sheet(session: Session, client: SheetsClient | None = None) -> dict[str
             row.image_url,
             scheduled_utc,
             matches[0].id if not error else None,
-            "INVALID" if error else "SCHEDULED",
+            "FAILED" if post.status == "FAILED" else ("INVALID" if error else "SCHEDULED"),
         ):
             unchanged += 1
             continue
@@ -109,9 +154,10 @@ def sync_sheet(session: Session, client: SheetsClient | None = None) -> dict[str
         post.image_url = row.image_url
         post.scheduled_for_utc = scheduled_utc
         post.source_timezone = config.timezone
-        post.status = "INVALID" if error else "SCHEDULED"
-        post.last_error_code = "PAGE" if error else None
-        post.last_error_message = error
+        if post.status != "FAILED":
+            post.status = "INVALID" if error else "SCHEDULED"
+            post.last_error_code = "PAGE" if error else None
+            post.last_error_message = error
         if not retain_backoff:
             post.next_attempt_at = None
         post.writeback_pending = True
@@ -137,8 +183,10 @@ def sync_sheet(session: Session, client: SheetsClient | None = None) -> dict[str
             "PUBLISHED",
             "UNCERTAIN",
             "CANCELLED",
-            "FAILED",
         }:
+            continue
+        if post is not None and post.status == "FAILED":
+            # Invalid replacement data cannot turn a failed attempt into a job.
             continue
         if post is None:
             post = ScheduledPost(

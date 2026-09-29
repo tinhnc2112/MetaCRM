@@ -10,6 +10,17 @@ from zoneinfo import ZoneInfo
 
 HEADERS = ("ID", "Page", "Caption", "Image", "Publish Date", "Publish Time", "Status")
 IMAGE_FORMULA = re.compile(r'^=IMAGE\("(https?://[^"\s]+)"\)$', re.IGNORECASE)
+SHEET_STATUSES = {
+    "",
+    "Chưa đăng",
+    "Đã lên lịch",
+    "Đang đăng",
+    "Đã đăng",
+    "Không chắc chắn",
+    "Đã hủy",
+    "Lỗi",
+}
+IMPORTABLE_STATUSES = {"", "Chưa đăng"}
 
 
 @dataclass(frozen=True)
@@ -20,6 +31,7 @@ class ParsedRow:
     image_url: str | None
     scheduled_for_utc: datetime
     row_number: int
+    sheet_status: str
 
 
 def parse_image(value: str) -> str | None:
@@ -57,7 +69,7 @@ def parse_rows(
     seen: set[str] = set()
     for row_number, raw in enumerate(values[1:], 2):
         cells = (raw + [""] * 7)[:7]
-        external_id, page, caption, image, date_value, time_value, _status = [
+        external_id, page, caption, image, date_value, time_value, status = [
             str(item) for item in cells
         ]
         external_id, page = external_id.strip(), page.strip()
@@ -69,6 +81,9 @@ def parse_rows(
             if external_id in seen:
                 raise ValueError("Duplicate ID")
             seen.add(external_id)
+            status = status.strip()
+            if status not in SHEET_STATUSES:
+                raise ValueError("Unknown Sheet Status")
             if not page:
                 raise ValueError("Missing Page")
             if not caption.strip() and not image.strip():
@@ -87,7 +102,15 @@ def parse_rows(
             if aware.replace(fold=1).utcoffset() != aware.utcoffset():
                 raise ValueError("Publish time is ambiguous in timezone")
             result.append(
-                ParsedRow(external_id, page, caption, image_url, aware.astimezone(UTC), row_number)
+                ParsedRow(
+                    external_id,
+                    page,
+                    caption,
+                    image_url,
+                    aware.astimezone(UTC),
+                    row_number,
+                    status,
+                )
             )
         except ValueError as exc:
             errors.append((row_number, external_id, str(exc)))

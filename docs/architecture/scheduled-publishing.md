@@ -4,9 +4,11 @@
 
 The configured worksheet must start with `ID | Page | Caption | Image | Publish Date | Publish Time | Status`. Add columns to an older `Caption | Image | Status` sheet without deleting existing rows. Assign a stable unique ID to every new schedule. `Page` is an exact Page ID, name, or username with exactly one active match. Caption text is preserved. Image is blank, a direct public URL, or a literal `=IMAGE("https://...")`. Dates accept ISO `YYYY-MM-DD` or `DD/MM/YYYY`; times accept `HH:MM` or ISO time. The configured IANA timezone is applied before storing UTC.
 
+Blank and `Chưa đăng` may create a schedule. A new row already marked `Đã lên lịch`, `Đang đăng`, `Đã đăng`, `Không chắc chắn`, `Đã hủy`, or `Lỗi` is recorded as `INVALID` for review and cannot be claimed. Unknown statuses are also invalid. An existing scheduled row may be edited and re-synced with `Đã lên lịch`; a row previously rejected for invalid content may be corrected while retaining the app-written `Lỗi`. A conflicting Sheet status on a still-pending DB schedule quarantines it as `INVALID` for review, without overwriting the Sheet's status. Terminal DB execution states are authoritative and Sheet edits cannot reopen them. Correct a previously failed image/content/other mutable payload in the Sheet while leaving its status `Lỗi`, sync, then explicitly Retry only if the failure code is safe to retry.
+
 ## Data and transitions
 
-`scheduled_posts` is authoritative. Sync updates only `INVALID`, `READY`, and `SCHEDULED` payloads. It leaves `FAILED`, `PUBLISHING`, `PUBLISHED`, `UNCERTAIN`, and `CANCELLED` unchanged. A missing Sheet row does not delete the DB row. The source identity has a unique digest index; due jobs and Page/time queries have indexes. MySQL stores UTC as naive `DATETIME`; the API returns an explicit UTC offset.
+`scheduled_posts` is authoritative. Sync updates `INVALID`, `READY`, and `SCHEDULED` payloads when Sheet status permits. A `FAILED` record may receive corrected caption, image, Page, and schedule while retaining `FAILED`, attempt count, and execution evidence. Only an explicit safe Retry makes it `SCHEDULED` again. Sync leaves `PUBLISHING`, `PUBLISHED`, `UNCERTAIN`, and `CANCELLED` unchanged. A missing Sheet row does not delete the DB row. The source identity has a unique digest index; due jobs and Page/time queries have indexes. MySQL stores UTC as naive `DATETIME`; the API returns an explicit UTC offset.
 
 The worker claims and commits a due schedule before making the Graph request. It never holds an InnoDB lock during media validation or Graph I/O. Explicit Graph rejection becomes `FAILED`; explicit rate limiting schedules up to three attempts with exponential backoff. Network timeout, 5xx, malformed success response, or a stale claim becomes `UNCERTAIN`. A successful Graph response records the Page post ID and becomes terminal `PUBLISHED`. The status write-back is a separate operation and cannot change `PUBLISHED` into a retryable state.
 
@@ -30,7 +32,7 @@ Meta's photo reference lists a 4 MB image limit and warns that PNG above 1 MB ma
 
 - Google outage: imported schedules continue; sync and write-back fail independently.
 - Facebook timeout or worker crash: inspect the Page and resolve `UNCERTAIN` manually. Never use Retry until a post is verified absent.
-- Token rejection: reconnect/re-consent the Page; `FAILED` records remain for explicit retry.
+- Invalid/revoked token (`INVALID_TOKEN`) or missing publishing permission (`MISSING_PERMISSION`): reconnect/re-consent the Page; these failures do not offer Retry. Reconcile the configuration and publishing access before any new schedule.
 - Rollback: stop the dedicated worker first, roll back API/Desktop deployment, and preserve M11 tables and evidence. Dropping tables is destructive and requires backup/review.
 
 Do not start the worker in production before a disposable MySQL migration/concurrency check and a controlled Meta app/Page publish test have passed.

@@ -13,7 +13,9 @@ from app.services.facebook.crypto import TokenCipher
 from app.services.facebook.exceptions import (
     FacebookApiError,
     FacebookConfigurationError,
+    FacebookPermissionError,
     FacebookRateLimitError,
+    FacebookTokenError,
     FacebookTransportError,
 )
 from app.services.publishing.media import MediaError, inspect_image
@@ -96,8 +98,13 @@ def publish_claimed(
     encrypted_token = page.access_token_encrypted if page else None
     attempt_count = post.attempt_count
     page_available = bool(
-        page and page.is_active and page.deleted_at is None and encrypted_token
-        and account and account.is_active and account.deleted_at is None
+        page
+        and page.is_active
+        and page.deleted_at is None
+        and encrypted_token
+        and account
+        and account.is_active
+        and account.deleted_at is None
     )
     session.rollback()  # Release the read transaction before external network I/O.
     if not page_available:
@@ -118,9 +125,7 @@ def publish_claimed(
                 response = (graph or FacebookGraphClient()).post(
                     endpoint, {"access_token": token, "message": caption}
                 )
-            provider_id = str(
-                (response.get("post_id") if image_url else response.get("id")) or ""
-            )
+            provider_id = str((response.get("post_id") if image_url else response.get("id")) or "")
             if not provider_id:
                 raise FacebookTransportError("Facebook response omitted post ID")
             outcome, code, detail = "PUBLISHED", None, None
@@ -153,6 +158,20 @@ def publish_claimed(
                     "Facebook rate limit retry limit reached",
                     None,
                 )
+        except FacebookTokenError:
+            outcome, code, detail, provider_id = (
+                "FAILED",
+                "INVALID_TOKEN",
+                "Reconnect the Facebook Page",
+                None,
+            )
+        except FacebookPermissionError:
+            outcome, code, detail, provider_id = (
+                "FAILED",
+                "MISSING_PERMISSION",
+                "Reconnect the Page and grant publishing access",
+                None,
+            )
         except FacebookApiError:
             outcome, code, detail, provider_id = (
                 "FAILED",

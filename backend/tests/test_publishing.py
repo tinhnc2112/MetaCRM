@@ -11,7 +11,11 @@ from app.models.auth import Role, User
 from app.models.facebook import FacebookAccount, FacebookPage
 from app.models.publishing import ScheduledPost, SheetPublishingConfig, source_identity_key
 from app.services.facebook.client import FacebookGraphClient
-from app.services.facebook.exceptions import FacebookTransportError
+from app.services.facebook.exceptions import (
+    FacebookPermissionError,
+    FacebookTokenError,
+    FacebookTransportError,
+)
 from app.services.publishing.media import MediaError, inspect_image, validate_public_url
 from app.services.publishing.parser import parse_image, parse_rows
 from app.services.publishing.sheet import SheetError
@@ -120,6 +124,146 @@ def test_sync_is_idempotent_and_published_is_immutable(session):
     assert (
         session.scalar(select(ScheduledPost).where(ScheduledPost.external_id == "one")) is not None
     )
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["Đã lên lịch", "Đang đăng", "Đã đăng", "Không chắc chắn", "Đã hủy", "Lỗi", "unknown"],
+)
+def test_preexisting_sheet_status_never_creates_a_due_job(session, status):
+    sheet = FakeSheet(
+        [HEADERS, ["old", "page1", "Already handled", "", "2025-01-01", "10:30", status]]
+    )
+    result = sync_sheet(session, sheet)
+    post = session.scalar(select(ScheduledPost).where(ScheduledPost.external_id == "old"))
+    assert result["invalid"] == 1
+    assert post.status == "INVALID"
+    assert claim_due(session) is None
+    assert post.last_error_code == ("SHEET_ROW" if status == "unknown" else "SHEET_STATUS")
+
+
+def test_published_db_record_stays_terminal_when_sheet_says_published(session):
+    sheet = FakeSheet([HEADERS, ["done", "page1", "Original", "", "2025-01-01", "10:30", ""]])
+    sync_sheet(session, sheet)
+    post = session.scalar(select(ScheduledPost).where(ScheduledPost.external_id == "done"))
+    post.status = "PUBLISHED"
+    post.attempt_count = 1
+    post.facebook_post_id = "page1_123"
+    session.commit()
+    sheet.rows[1][2] = "Changed after publication"
+    sheet.rows[1][6] = "Đã đăng"
+    sync_sheet(session, sheet)
+    assert post.status == "PUBLISHED"
+    assert post.caption == "Original"
+    assert post.attempt_count == 1
+    assert post.facebook_post_id == "page1_123"
+    assert claim_due(session) is None
+
+
+def test_existing_scheduled_row_can_be_updated_after_status_writeback(session):
+    sheet = FakeSheet([HEADERS, ["update", "page1", "Initial", "", "2026-10-01", "10:30", ""]])
+    sync_sheet(session, sheet)
+    sheet.rows[1][6] = "Đã lên lịch"
+    sheet.rows[1][2] = "Corrected before publish"
+    assert sync_sheet(session, sheet)["updated"] == 1
+    post = session.scalar(select(ScheduledPost).where(ScheduledPost.external_id == "update"))
+    assert post.status == "SCHEDULED" and post.caption == "Corrected before publish"
+
+
+def test_conflicting_published_sheet_status_quarantines_pending_schedule(session):
+    sheet = FakeSheet([HEADERS, ["conflict", "page1", "Original", "", "2025-01-01", "10:30", ""]])
+    sync_sheet(session, sheet)
+    sheet.rows[1][6] = "Đã đăng"
+    assert sync_sheet(session, sheet)["invalid"] == 1
+    post = session.scalar(select(ScheduledPost).where(ScheduledPost.external_id == "conflict"))
+    assert post.status == "INVALID"
+    assert post.last_error_code == "SHEET_STATUS"
+    assert claim_due(session) is None
+
+
+def test_failed_image_can_be_corrected_but_requires_explicit_retry(session):
+    from app.api.publishing import retry
+
+    row = [
+        "image-fix",
+        "page1",
+        "Caption",
+        "https://example.com/bad.png",
+        "2025-01-01",
+        "10:30",
+        "",
+    ]
+    sheet = FakeSheet([HEADERS, row])
+    sync_sheet(session, sheet)
+    post = session.scalar(select(ScheduledPost).where(ScheduledPost.external_id == "image-fix"))
+    post.status = "FAILED"
+    post.attempt_count = 1
+    post.last_error_code = "INVALID_IMAGE"
+    post.request_fingerprint = "original-attempt-fingerprint"
+    session.commit()
+    row[2] = "Corrected caption"
+    row[3] = "https://example.com/good.png"
+    row[4] = "2025-01-02"
+    row[6] = "Lỗi"  # Status written back after a definite failure.
+    assert sync_sheet(session, sheet)["updated"] == 1
+    assert post.status == "FAILED"
+    assert post.image_url == row[3] and post.caption == row[2]
+    assert post.attempt_count == 1
+    assert post.request_fingerprint == "original-attempt-fingerprint"
+    assert post.last_error_code == "INVALID_IMAGE"
+    assert claim_due(session) is None
+    user = session.scalar(select(User).where(User.username == "publisher"))
+    user.roles = [Role(name="admin")]
+    session.commit()
+    assert retry(post.uuid, session, user)["status"] == "SCHEDULED"
+    assert post.image_url == row[3]
+
+
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        (FacebookTokenError("revoked"), "INVALID_TOKEN"),
+        (FacebookPermissionError("permission"), "MISSING_PERMISSION"),
+    ],
+)
+def test_provider_credential_failures_are_distinct_and_not_retryable(
+    session, monkeypatch, failure, code
+):
+    from app.api.publishing import retry
+    from fastapi import HTTPException
+
+    page = session.scalar(select(FacebookPage))
+    post = ScheduledPost(
+        source="google_sheet",
+        source_key=source_identity_key("google_sheet", "sheet", "Posts", code),
+        spreadsheet_id="sheet",
+        worksheet="Posts",
+        external_id=code,
+        source_timezone="UTC",
+        status="SCHEDULED",
+        caption="No unsafe retry",
+        facebook_page_id=page.id,
+        scheduled_for_utc=datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=1),
+    )
+    session.add(post)
+    session.commit()
+    monkeypatch.setattr(
+        "app.services.publishing.worker.TokenCipher",
+        lambda: type("Cipher", (), {"decrypt": lambda self, value: "fake-token"})(),
+    )
+
+    class Graph:
+        def post(self, path, payload):
+            raise failure
+
+    assert publish_claimed(session, claim_due(session), Graph()) == "FAILED"
+    assert post.last_error_code == code
+    user = session.scalar(select(User).where(User.username == "publisher"))
+    user.roles = [Role(name="admin")]
+    session.commit()
+    with pytest.raises(HTTPException) as exc:
+        retry(post.uuid, session, user)
+    assert exc.value.status_code == 409
 
 
 def test_duplicate_sheet_id_never_schedules_a_post(session):
@@ -326,24 +470,29 @@ def test_disconnected_page_is_not_published(session):
     post = ScheduledPost(
         source="google_sheet",
         source_key=source_identity_key("google_sheet", "sheet", "Posts", "revoked"),
-        spreadsheet_id="sheet", worksheet="Posts", external_id="revoked", source_timezone="UTC",
-        status="SCHEDULED", caption="Should not publish", facebook_page_id=page.id,
+        spreadsheet_id="sheet",
+        worksheet="Posts",
+        external_id="revoked",
+        source_timezone="UTC",
+        status="SCHEDULED",
+        caption="Should not publish",
+        facebook_page_id=page.id,
         scheduled_for_utc=datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=1),
     )
     session.add(post)
     session.commit()
+
     class Graph:
         def post(self, *args):
             pytest.fail("Graph must not be called for a disconnected Page")
+
     assert publish_claimed(session, claim_due(session), Graph()) == "FAILED"
     assert post.last_error_code == "PAGE_UNAVAILABLE"
 
 
 @pytest.mark.parametrize("ip", ["127.0.0.1", "10.1.2.3", "192.168.1.1", "169.254.169.254", "::1"])
 def test_private_media_hosts_rejected(monkeypatch, ip):
-    monkeypatch.setattr(
-        "socket.getaddrinfo", lambda *args, **kwargs: [(2, 1, 6, "", (ip, 443))]
-    )
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: [(2, 1, 6, "", (ip, 443))])
     with pytest.raises(MediaError):
         validate_public_url("https://example.com/image.png")
     with pytest.raises(MediaError):
