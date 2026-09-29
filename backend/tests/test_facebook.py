@@ -145,6 +145,7 @@ def test_facebook_oauth_url_requests_exact_messenger_scopes(session: Session) ->
         "pages_read_engagement",
         "pages_manage_metadata",
         "pages_messaging",
+        "pages_manage_posts",
     )
     assert "business_management" not in FACEBOOK_AUTH_SCOPES
 

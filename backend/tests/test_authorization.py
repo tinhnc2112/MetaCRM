@@ -62,6 +62,9 @@ def _headers(session: Session, name: str) -> dict[str, str]:
 
 
 ADMIN_OPERATIONS = {
+    ("PUT", "/api/v1/publishing/config"),
+    ("POST", "/api/v1/publishing/sync"),
+    ("POST", "/api/v1/publishing/posts/{post_id}/resolve"),
     ("GET", "/api/v1/facebook/auth/url"),
     ("POST", "/api/v1/facebook/pages/sync"),
     *(
@@ -150,6 +153,7 @@ def test_entire_active_route_surface_is_classified() -> None:
                     "/api/v1/facebook/shipments",
                     "/api/v1/facebook/customer-tags",
                     "/api/v1/facebook/segments",
+                    "/api/v1/publishing/",
                 )
             ), route.path
     assert protected == ADMIN_OPERATIONS

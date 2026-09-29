@@ -10,3 +10,4 @@ PyJWT>=2.9.0,<3.0.0
 loguru>=0.7.0,<1.0.0
 websockets>=13.0,<16.0
 cryptography>=42.0.0,<51.0.0
+tzdata>=2025.1,<2028.0

@@ -59,6 +59,7 @@ class Settings(BaseModel):
         default="metacrm://settings/facebook",
         validation_alias="FACEBOOK_DESKTOP_REDIRECT_URI",
     )
+    google_service_account_file: str = Field(default="", validation_alias="GOOGLE_SERVICE_ACCOUNT_FILE")
     upload_dir: Path = Field(default=PROJECT_ROOT / "backend" / "uploads", validation_alias="UPLOAD_DIR")
     log_dir: Path = Field(default=PROJECT_ROOT / "backend" / "logs", validation_alias="LOG_DIR")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")

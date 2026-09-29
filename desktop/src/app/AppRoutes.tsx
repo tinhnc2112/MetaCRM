@@ -11,6 +11,7 @@ import { LoginPage } from "../pages/LoginPage";
 import { ProductManagementPage } from "../pages/ProductManagementPage";
 import { OrderOperationsPage } from "../pages/OrderOperationsPage";
 import { CarrierSettingsPage } from "../pages/CarrierSettingsPage";
+import { ScheduledPublishingPage } from "../pages/ScheduledPublishingPage";
 
 export function AppRoutes() {
   return (
@@ -23,6 +24,7 @@ export function AppRoutes() {
         <Route path="/messenger" element={<MessengerInboxPage />} />
         <Route path="/products" element={<ProductManagementPage />} />
         <Route path="/orders" element={<OrderOperationsPage />} />
+        <Route path="/publishing" element={<ScheduledPublishingPage />} />
         <Route path="/settings/facebook" element={<FacebookSettingsPage />} />
         <Route path="/settings/carriers" element={<CarrierSettingsPage />} />
         <Route path="/settings/segments" element={<CustomerSegmentsPage />} />

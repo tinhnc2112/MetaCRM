@@ -17,6 +17,14 @@ class FacebookApiError(FacebookIntegrationError):
     """Raised when Graph API returns an error response."""
 
 
+class FacebookTransportError(FacebookApiError):
+    """Graph request outcome is unknown after a transport failure."""
+
+
+class FacebookRateLimitError(FacebookApiError):
+    """Graph explicitly rejected the request due to rate limiting."""
+
+
 class FacebookPermissionError(FacebookApiError):
     """Raised when Facebook denies a request because permissions are insufficient."""
 

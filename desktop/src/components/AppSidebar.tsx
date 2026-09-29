@@ -5,6 +5,7 @@ import {
   MessageOutlined,
   ShoppingCartOutlined,
   ShoppingOutlined,
+  CalendarOutlined,
   SettingOutlined,
   TruckOutlined,
   TeamOutlined,
@@ -56,6 +57,7 @@ export function AppSidebar() {
             icon: <ShoppingCartOutlined />,
             label: "Orders"
           },
+          { key: "/publishing", icon: <CalendarOutlined />, label: "Scheduled Publishing" },
           {
             key: "settings",
             icon: <SettingOutlined />,

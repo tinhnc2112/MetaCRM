@@ -98,6 +98,15 @@ The following table inventories every registered application route.
 | POST | `/api/v1/facebook/conversations/{conversation_id}/messages` | conversations |
 | GET | `/api/v1/facebook/conversations/{conversation_id}/outbound-sends/{operation_id}` | conversations |
 | POST | `/api/v1/facebook/conversations/{conversation_id}/outbound-sends/{operation_id}/reconcile` | conversations |
+| GET | `/api/v1/publishing/config` | publishing |
+| PUT | `/api/v1/publishing/config` | publishing |
+| POST | `/api/v1/publishing/sync` | publishing |
+| GET | `/api/v1/publishing/posts` | publishing |
+| GET | `/api/v1/publishing/posts/{post_id}` | publishing |
+| POST | `/api/v1/publishing/posts/{post_id}/reschedule` | publishing |
+| POST | `/api/v1/publishing/posts/{post_id}/cancel` | publishing |
+| POST | `/api/v1/publishing/posts/{post_id}/retry` | publishing |
+| POST | `/api/v1/publishing/posts/{post_id}/resolve` | publishing |
 | WS | `/api/v1/ws` | websocket |
 | GET | `/version` | version |
 
@@ -176,3 +185,9 @@ Use [reproducible baseline](reproducible-baseline.md) for Python 3.13, the
 pinned requirements, disposable MySQL, Alembic head, Ruff baseline and client
 build commands. `APP_ENV` controls security validation, not route prefixes.
 No API v2 or compatibility route was added by M7.
+
+## Scheduled publishing (M11)
+
+`/api/v1/publishing/config` supports `GET` for an active user and `PUT` for an admin. It returns spreadsheet ID, worksheet, timezone, and last sync status; service-account credentials remain backend-only. `POST /api/v1/publishing/sync` is admin-only and returns created/updated/unchanged/invalid counts.
+
+`GET /api/v1/publishing/posts` accepts optional `page_id`, `status`, `limit` (1–100), and `offset`. `GET /posts/{uuid}` returns one schedule. Staff reads and mutates only schedules for connected Pages they can access; admins can inspect all. Mutations use `POST /posts/{uuid}/reschedule` (aware UTC datetime), `/cancel`, `/retry` (definite `FAILED`, max three attempts), and admin-only `/resolve` for `UNCERTAIN` with explicit confirmation and outcome `published` plus Facebook post ID or `verified_not_published`. State conflicts return 409; inaccessible objects return 404. `UNCERTAIN` has no retry endpoint path until manually resolved.
