@@ -1,0 +1,50 @@
+name: Import content gia vi images
+
+on:
+  push:
+    paths:
+      - '.github/workflows/import-content-gia-vi-images.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  import-images:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download generated images
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets/content-gia-vi-km
+          curl -L --fail --retry 3 'https://oaisdmntpraustraliaeast.blob.core.windows.net/files/00000000-5e00-81fa-b4ff-dde011fd6390/raw?se=2026-09-29T09%3A23%3A49Z&sp=r&sv=2026-02-06&sr=b&scid=474164d5-07f6-434f-97d7-b42521096c68&skoid=f5e14fda-2af7-44a3-9d18-d372ffcad871&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-29T03%3A46%3A02Z&ske=2026-09-30T03%3A46%3A02Z&sks=b&skv=2026-02-06&sig=0DoOvn5rtJaG9PSzbnliX2GsvfKQcnYmIr8ZRaVGUpw%3D' -o assets/content-gia-vi-km/caption-01.png
+          curl -L --fail --retry 3 'https://oaisdmntprnznorth.blob.core.windows.net/files/00000000-92a4-820b-aedd-3464d6474d84/raw?se=2026-09-29T09%3A23%3A49Z&sp=r&sv=2026-02-06&sr=b&scid=474164d5-07f6-434f-97d7-b42521096c68&skoid=f5e14fda-2af7-44a3-9d18-d372ffcad871&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-29T05%3A18%3A25Z&ske=2026-09-30T05%3A18%3A25Z&sks=b&skv=2026-02-06&sig=BMQqgyyDtqY5lMHjt%2BmuQqG%2BWkTTZy%2BaUaCTxYDZR6c%3D' -o assets/content-gia-vi-km/caption-02.png
+          curl -L --fail --retry 3 'https://oaisdmntprwestus.blob.core.windows.net/files/00000000-c8f8-8230-8094-901837e046b4/raw?se=2026-09-29T09%3A23%3A49Z&sp=r&sv=2026-02-06&sr=b&scid=474164d5-07f6-434f-97d7-b42521096c68&skoid=f5e14fda-2af7-44a3-9d18-d372ffcad871&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-29T06%3A38%3A24Z&ske=2026-09-30T06%3A38%3A24Z&sks=b&skv=2026-02-06&sig=JdTBNAgYz6HzRhpvinSD61fkKifuHd%2BGBRN0vQvTxIk%3D' -o assets/content-gia-vi-km/caption-03.png
+          curl -L --fail --retry 3 'https://oaisdmntprwestus.blob.core.windows.net/files/00000000-3dc8-8230-beeb-e2f8c7b14ae3/raw?se=2026-09-29T09%3A23%3A49Z&sp=r&sv=2026-02-06&sr=b&scid=474164d5-07f6-434f-97d7-b42521096c68&skoid=f5e14fda-2af7-44a3-9d18-d372ffcad871&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-29T05%3A18%3A26Z&ske=2026-09-30T05%3A18%3A26Z&sks=b&skv=2026-02-06&sig=ZaegJHbgeyiyfAlMRmGPDP%2BjrosNUtM1sWxrgIGFBCc%3D' -o assets/content-gia-vi-km/caption-04.png
+          curl -L --fail --retry 3 'https://oaisdmntpraustraliaeast.blob.core.windows.net/files/00000000-ec94-81fa-8554-e7a569b79487/raw?se=2026-09-29T09%3A23%3A49Z&sp=r&sv=2026-02-06&sr=b&scid=474164d5-07f6-434f-97d7-b42521096c68&skoid=f5e14fda-2af7-44a3-9d18-d372ffcad871&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-29T03%3A55%3A36Z&ske=2026-09-30T03%3A55%3A36Z&sks=b&skv=2026-02-06&sig=3Zo7kkGaBX4Nqw68hTPe3dS7kAO5Iqd3pHozO4e3iYI%3D' -o assets/content-gia-vi-km/caption-05.png
+          curl -L --fail --retry 3 'https://oaisdmntprnznorth.blob.core.windows.net/files/00000000-983c-820b-b196-ca6770bc325b/raw?se=2026-09-29T09%3A23%3A49Z&sp=r&sv=2026-02-06&sr=b&scid=474164d5-07f6-434f-97d7-b42521096c68&skoid=f5e14fda-2af7-44a3-9d18-d372ffcad871&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-29T03%3A53%3A28Z&ske=2026-09-30T03%3A53%3A28Z&sks=b&skv=2026-02-06&sig=JER3Q44shlbmM/4oQkoocUFzi%2B/ngoH6wzXhqr6yY3Y%3D' -o assets/content-gia-vi-km/caption-06.png
+          curl -L --fail --retry 3 'https://oaisdmntprwestus3.blob.core.windows.net/files/00000000-fdc8-81fd-ba22-442e2d0541a6/raw?se=2026-09-29T09%3A23%3A49Z&sp=r&sv=2026-02-06&sr=b&scid=474164d5-07f6-434f-97d7-b42521096c68&skoid=f5e14fda-2af7-44a3-9d18-d372ffcad871&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-29T03%3A52%3A57Z&ske=2026-09-30T03%3A52%3A57Z&sks=b&skv=2026-02-06&sig=qokjCjlyx3qqPLJtXLYPgtwW8GwWm8Sik9gi/qq4qGQ%3D' -o assets/content-gia-vi-km/caption-07.png
+
+      - name: Validate images
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in assets/content-gia-vi-km/caption-*.png; do
+            test "$(stat -c%s "$f")" -gt 100000 || { echo "Image too small: $f"; exit 1; }
+            file "$f" | grep -qiE 'PNG image|JPEG image' || { echo "Not an image: $f"; exit 1; }
+          done
+      - name: Commit images
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add assets/content-gia-vi-km/caption-*.png
+          if git diff --cached --quiet; then
+            echo 'No image changes to commit'
+            exit 0
+          fi
+          git commit -m 'Import stable content gia vi KM images'
+          git push
