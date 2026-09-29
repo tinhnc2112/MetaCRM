@@ -19,6 +19,7 @@ from app.models.inventory import ProductInventory, StockMovement
 from app.models.messenger import Conversation, Message, OutboundSend
 from app.models.orders import Order, OrderEvent, OrderItem
 from app.models.products import Product
+from app.models.publishing import ScheduledPost, SheetPublishingConfig
 from app.models.shipments import Shipment, ShipmentEvent
 
 __all__ = [
@@ -48,6 +49,8 @@ __all__ = [
     "OrderEvent",
     "OrderItem",
     "Product",
+    "ScheduledPost",
+    "SheetPublishingConfig",
     "RefreshSession",
     "Role",
     "Shipment",

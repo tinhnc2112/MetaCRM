@@ -10,6 +10,7 @@ from app.api.facebook import router as facebook_router
 from app.api.inventory import router as inventory_router
 from app.api.orders import router as orders_router
 from app.api.products import router as products_router
+from app.api.publishing import router as publishing_router
 from app.api.shipments import router as shipments_router
 from app.api.system import router as system_router
 from app.api.webhook import router as webhook_router
@@ -26,6 +27,7 @@ api_router.include_router(customer_segments_router)
 api_router.include_router(customers_router)
 api_router.include_router(orders_router)
 api_router.include_router(products_router)
+api_router.include_router(publishing_router)
 api_router.include_router(inventory_router)
 api_router.include_router(shipments_router)
 api_router.include_router(webhook_router)

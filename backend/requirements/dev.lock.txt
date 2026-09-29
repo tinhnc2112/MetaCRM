@@ -104,6 +104,8 @@ typing-extensions==4.16.0
     #   typing-inspection
 typing-inspection==0.4.4
     # via pydantic
+tzdata==2026.4
+    # via -r backend/requirements/base.txt
 uvicorn==0.53.0
     # via -r backend/requirements/base.txt
 uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'

@@ -11,10 +11,9 @@ from urllib.parse import urlencode
 from app.core.config import get_settings
 from app.models.auth import User
 from app.models.facebook import FacebookOAuthState
-from sqlalchemy.orm import Session
-
 from app.services.facebook.client import FacebookGraphClient
 from app.services.facebook.exceptions import FacebookConfigurationError, FacebookOAuthStateError
+from sqlalchemy.orm import Session
 
 FACEBOOK_AUTH_SCOPES = (
     "public_profile",
@@ -22,6 +21,7 @@ FACEBOOK_AUTH_SCOPES = (
     "pages_read_engagement",
     "pages_manage_metadata",
     "pages_messaging",
+    "pages_manage_posts",
 )
 
 
@@ -65,7 +65,11 @@ def validate_oauth_state(session: Session, state: str) -> User:
     if stored_state is None or stored_state.used_at is not None or stored_state.expires_at <= now:
         raise FacebookOAuthStateError("Invalid or expired Facebook OAuth state")
 
-    user = session.query(User).filter(User.id == stored_state.user_id, User.deleted_at.is_(None)).first()
+    user = (
+        session.query(User)
+        .filter(User.id == stored_state.user_id, User.deleted_at.is_(None))
+        .first()
+    )
     if user is None or not user.is_active:
         raise FacebookOAuthStateError("Facebook OAuth state is not associated with an active user")
 
@@ -113,7 +117,9 @@ def exchange_code_for_token(code: str, client: FacebookGraphClient | None = None
     return FacebookToken(access_token=access_token, expires_at=expires_at)
 
 
-def get_facebook_user_info(access_token: str, client: FacebookGraphClient | None = None) -> FacebookUserInfo:
+def get_facebook_user_info(
+    access_token: str, client: FacebookGraphClient | None = None
+) -> FacebookUserInfo:
     graph = client or FacebookGraphClient()
     payload = graph.get("/me", {"fields": "id,name"}, access_token=access_token)
     return FacebookUserInfo(facebook_user_id=str(payload["id"]), name=payload.get("name"))
